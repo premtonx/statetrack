@@ -1,0 +1,75 @@
+# syntax=docker/dockerfile:1.7
+#
+# StateTrack agent — container image for Kubernetes and Docker hosts.
+#
+#   docker build -f deploy/docker/Dockerfile.agent -t statetrack-agent:v0.1.0 .
+#
+# This is the image the Kubernetes manifests in deploy/k8s/ reference. It is a
+# separate image from the server on purpose: a node agent must not be able to
+# read a database DSN or serve an API, so it ships exactly one binary.
+#
+# The agent reads host paths, so the manifests mount / read-only and run it
+# non-root with every capability dropped. It needs no capability of its own in
+# that mode: fanotify and audit attribution degrade to inotify and /proc
+# scanning, which is the documented trade-off of a locked-down container (see
+# docs/agent-deployment-guide.md).
+
+# --------------------------------------------------------------------------- #
+# Stage 1 — compile                                                           #
+# --------------------------------------------------------------------------- #
+FROM golang:1.26-alpine AS build
+
+RUN apk add --no-cache git ca-certificates tzdata
+
+WORKDIR /src
+
+# Workspace manifests first, so the module layer is cached across source edits.
+COPY go.work go.work.sum ./
+COPY pkg/go.mod pkg/go.sum ./pkg/
+COPY agent/go.mod agent/go.sum ./agent/
+COPY server/go.mod server/go.sum ./server/
+RUN go work sync && cd agent && go mod download
+
+COPY pkg/ ./pkg/
+COPY agent/ ./agent/
+
+ARG VERSION=v0.1.0
+ARG COMMIT=unknown
+ARG BUILD_DATE=unknown
+# `main` only declares `version` in the agent, so a -X for a symbol that does not
+# exist is silently ignored by the linker. Stamp what is actually there.
+RUN CGO_ENABLED=0 GOOS=linux go build \
+      -trimpath \
+      -ldflags "-s -w -X main.version=${VERSION}" \
+      -o /out/statetrack-agent ./agent/cmd/statetrack-agent
+
+RUN test -x /out/statetrack-agent \
+ && /out/statetrack-agent --version | grep -q "${VERSION}"
+
+# --------------------------------------------------------------------------- #
+# Stage 2 — runtime                                                           #
+# --------------------------------------------------------------------------- #
+FROM alpine:3.20
+
+# ca-certificates for gRPC over TLS; tzdata so event timestamps render in the
+# pod's configured zone. Nothing else — the binary is static.
+RUN apk add --no-cache ca-certificates tzdata \
+ && addgroup -S -g 65532 statetrack \
+ && adduser -S -u 65532 -G statetrack -H -h /var/lib/statetrack statetrack \
+ && mkdir -p /var/lib/statetrack /etc/statetrack \
+ && chown -R 65532:65532 /var/lib/statetrack
+
+COPY --from=build /out/statetrack-agent /usr/local/bin/statetrack-agent
+
+# The Kubernetes manifests run this as 65532 with readOnlyRootFilesystem, so
+# the only writable path is the mounted state volume.
+USER 65532:65532
+WORKDIR /var/lib/statetrack
+
+ENV STATETRACK_LOG_LEVEL=info \
+    STATETRACK_STATE_DIR=/var/lib/statetrack
+
+# The agent listens on nothing; this entrypoint exists so `docker run ... --help`
+# and `--version` work the same way they do for the bare binary.
+ENTRYPOINT ["/usr/local/bin/statetrack-agent"]
+CMD ["--config", "/etc/statetrack/agent.yaml"]

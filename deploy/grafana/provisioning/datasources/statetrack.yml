@@ -1,0 +1,88 @@
+# Grafana datasource provisioning for the local demo stack.
+#
+# Loaded automatically on `docker compose up`, because Grafana reads every
+# *.yml under /etc/grafana/provisioning/datasources at startup.
+#
+# Two datasources, deliberately, because the dashboard needs two different
+# shapes of answer:
+#
+#   statetrack-prometheus  the server's /metrics counters (rates, up/down,
+#                          histograms). Cheap to evaluate, but only as long as
+#                          the TSDB retention window and only from the moment
+#                          Prometheus first scraped — which is why a chart that
+#                          is supposed to cover an hour is empty for the first
+#                          hour after `docker compose up`.
+#
+#   statetrack-postgres    the events/hosts/targets/actors tables themselves.
+#                          Available immediately and complete, so the dashboard
+#                          can render exact integer KPIs, the affected-host and
+#                          recent-changes tables, the category breakdown, and a
+#                          full one-hour telemetry line built with
+#                          generate_series() rather than waiting for a scrape to
+#                          accumulate.
+#
+# The provisioned dashboard declares both as *name* variables (DS_PROMETHEUS,
+# DS_POSTGRES). On import Grafana resolves each to a datasource of that type and
+# stores its uid, so both must exist *before* the dashboard is imported.
+#
+# `uid` is pinned rather than generated: the seeder imports the dashboard by
+# resolving those variables at push time, and a stable uid means the same JSON
+# produces byte-identical provisioning on every machine.
+#
+# The Postgres credentials come from the same environment variables the compose
+# file feeds the postgres service, so changing POSTGRES_PASSWORD in .env changes
+# both the database and the datasource that reads it.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: statetrack-prometheus
+    type: prometheus
+    access: proxy
+    # Container-to-container: see deploy/prometheus/prometheus.yml.
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      httpMethod: POST
+      # Matches the stack's scrape_interval so $__rate_interval stays sane.
+      timeInterval: 15s
+      prometheusType: Prometheus
+      prometheusVersion: 3.1.0
+      # Keeps the Grafana data-source editor honest about the query language.
+      manageAlerts: false
+
+  - name: StateTrack Postgres
+    uid: statetrack-postgres
+    type: postgres
+    access: proxy
+    # Container-to-container: `postgres` is the compose service name, which is
+    # why this works from inside Grafana but not from the host (the seeder uses
+    # localhost:5432 instead).
+    url: ${POSTGRES_HOST}:${POSTGRES_PORT}
+    database: ${POSTGRES_DB}
+    user: ${POSTGRES_USER}
+    secureJsonData:
+      password: ${POSTGRES_PASSWORD}
+    editable: true
+    jsonData:
+      sslmode: disable
+      # The database has to be named twice, because the two plugins read it
+      # from different places: the legacy `postgres` datasource takes the
+      # top-level `database` above, while `grafana-postgresql-datasource`
+      # (Grafana 12.3+, and what `type: postgres` is rewritten to on 13+) reads
+      # `jsonData.database`. With only the top-level field the new plugin
+      # reports **"You do not currently have a default database configured for
+      # this data source"** and refuses to run a single query — every panel on
+      # the dashboard renders "No data" while the datasource health check still
+      # passes, which is a genuinely confusing failure to debug from the UI.
+      # Setting both keeps the file portable across versions.
+      database: ${POSTGRES_DB}
+      # Lets Grafana offer Postgres-only syntax help and pick the right
+      # introspection queries in the query editor.
+      postgresVersion: 1700
+      timescaledb: false
+      # Every panel filters on `occurred_at` explicitly, so the datasource must
+      # not try to rewrite or wrap the SQL.
+      maxOpenConns: 10
+      maxIdleConns: 5

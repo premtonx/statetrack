@@ -1,0 +1,14 @@
+{
+  "identities": [
+    {
+      "name": "statetrack-dev",
+      "credentials": [
+        {
+          "accessKey": "statetrack",
+          "secretKey": "statetrack-secret"
+        }
+      ],
+      "actions": ["Admin", "Read", "List", "Tagging", "Write"]
+    }
+  ]
+}

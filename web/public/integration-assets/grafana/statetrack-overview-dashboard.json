@@ -1,0 +1,1945 @@
+{
+  "__inputs": [],
+  "__requires": [],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": false,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "filter": {
+          "exclude": false,
+          "ids": [
+            30
+          ]
+        },
+        "hide": true,
+        "iconColor": "#ef4444",
+        "name": "L1 critical changes",
+        "target": {
+          "limit": 200,
+          "matchAny": false,
+          "tags": [
+            "statetrack",
+            "level:L1"
+          ],
+          "type": "tags"
+        }
+      },
+      {
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "filter": {
+          "exclude": false,
+          "ids": [
+            30
+          ]
+        },
+        "hide": true,
+        "iconColor": "#f59e0b",
+        "name": "L2 grouped changes",
+        "target": {
+          "limit": 200,
+          "matchAny": false,
+          "tags": [
+            "statetrack",
+            "level:L2"
+          ],
+          "type": "tags"
+        }
+      }
+    ]
+  },
+  "description": "StateTrack fleet change impact. The top grid is the headline - how much changed, how fast, how much of the fleet was touched, and how much of it is still reporting. The hero panel puts infrastructure signals and the flagged changes on one clock, so an error spike can be read against the change that caused it. The rows below break the same window down by impact, host, category and individual change.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "asDropdown": false,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [
+        "statetrack"
+      ],
+      "targetBlank": true,
+      "title": "StateTrack console",
+      "type": "link",
+      "url": "${STATETRACK_UI_URL}/timeline"
+    }
+  ],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${DS_POSTGRES}"
+      },
+      "description": "Level 1 changes in the window, as an exact count from the events table. The sparkline is the per-minute count, so the shape shows when the critical edits landed rather than a synthetic trend.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#ef4444",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "id": 10,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${DS_POSTGRES}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "\nWITH buckets AS (\n    SELECT generate_series(date_trunc('minute', $__timeFrom()::timestamptz), $__timeTo()::timestamptz, interval '1 minute') AS bucket\n),\ncounts AS (\n    SELECT date_trunc('minute', e.occurred_at) AS bucket, count(*) AS c\n    FROM events e\n    JOIN hosts h ON h.id = e.host_id\n    WHERE e.occurred_at BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n      AND e.parent_event_id IS NULL\n      AND e.impact_level = 1\n      AND h.hostname IN ($host)\n    GROUP BY 1\n)\nSELECT b.bucket AS \"time\",\n       coalesce(c.c, 0)::int AS \"vs. previous hour\"\nFROM buckets b\nLEFT JOIN counts c USING (bucket)\nORDER BY 1\n",
+          "refId": "A"
+        }
+      ],
+      "title": "Critical changes",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${DS_POSTGRES}"
+      },
+      "description": "Mean changes per minute across the window. Averaged over the full hour, including the quiet minutes, so a burst does not inflate the headline rate.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 1,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#f59e0b",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "id": 11,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "mean"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${DS_POSTGRES}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "\nWITH buckets AS (\n    SELECT generate_series(date_trunc('minute', $__timeFrom()::timestamptz), $__timeTo()::timestamptz, interval '1 minute') AS bucket\n),\ncounts AS (\n    SELECT date_trunc('minute', e.occurred_at) AS bucket, count(*) AS c\n    FROM events e\n    JOIN hosts h ON h.id = e.host_id\n    WHERE e.occurred_at BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n      AND e.parent_event_id IS NULL\n      AND h.hostname IN ($host)\n    GROUP BY 1\n)\nSELECT b.bucket AS \"time\",\n       coalesce(c.c, 0)::int AS \"vs. previous hour\"\nFROM buckets b\nLEFT JOIN counts c USING (bucket)\nORDER BY 1\n",
+          "refId": "A"
+        }
+      ],
+      "title": "Changes / minute",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${DS_POSTGRES}"
+      },
+      "description": "How many hosts saw at least one change in the window, taken from the peak two-minute bucket. One host is a local incident; the whole fleet at once is a rollout - or a compromised credential.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#3b82f6",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "id": 12,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "max"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${DS_POSTGRES}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "\nWITH buckets AS (\n    SELECT generate_series(date_trunc('minute', $__timeFrom()::timestamptz), $__timeTo()::timestamptz, interval '1 minute') AS bucket\n),\ncounts AS (\n    SELECT date_trunc('minute', e.occurred_at) AS bucket, count(DISTINCT e.host_id) AS c\n    FROM events e\n    JOIN hosts h ON h.id = e.host_id\n    WHERE e.occurred_at BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n      AND e.parent_event_id IS NULL\n      AND h.hostname IN ($host)\n    GROUP BY 1\n)\nSELECT b.bucket AS \"time\",\n       max(coalesce(c.c, 0)) OVER (ORDER BY b.bucket) AS \"vs. previous hour\"\nFROM buckets b\nLEFT JOIN counts c USING (bucket)\nORDER BY 1\n",
+          "refId": "A"
+        }
+      ],
+      "title": "Hosts affected",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${DS_POSTGRES}"
+      },
+      "description": "Agents reporting inside their 15-minute heartbeat window against the enrolled fleet. A host that is offline is a host whose changes are not being captured, which is the one failure this dashboard cannot show you any other way. Green means every enrolled agent is reporting; red means at least one has gone quiet. In demo mode the backend stamps the seeded fleet every 30 seconds, so this card stays at 4 / 4 for as long as the server runs.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#22c55e"
+          },
+          "decimals": null,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#ef4444",
+                "value": null
+              },
+              {
+                "color": "#22c55e",
+                "value": 4
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Agents online"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^([0-9]+) / \\1$",
+                      "result": {
+                        "text": "$1 / $1",
+                        "color": "#22c55e",
+                        "index": 0
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^([0-9]+) / ([0-9]+)$",
+                      "result": {
+                        "text": "$1 / $2",
+                        "color": "#ef4444",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "healthy"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^(100% healthy)$",
+                      "result": {
+                        "text": "$1",
+                        "color": "#22c55e",
+                        "index": 0
+                      }
+                    }
+                  },
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": "^([0-9]+% healthy)$",
+                      "result": {
+                        "text": "$1",
+                        "color": "#ef4444",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "id": 13,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [],
+          "fields": "/^(Agents online|healthy)$/",
+          "values": true
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${DS_POSTGRES}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "refId": "A",
+          "rawSql": "\nWITH fleet AS (\n    SELECT count(*) AS enrolled,\n           count(*) FILTER (WHERE last_seen_at > now() - interval '15 minutes') AS online\n    FROM hosts\n)\nSELECT online::text || ' / ' || enrolled::text AS \"Agents online\",\n       CASE WHEN enrolled = 0 THEN 'no agents enrolled'\n            WHEN online = enrolled THEN '100% healthy'\n            ELSE round(100.0 * online / enrolled)::text || '% healthy' END AS \"healthy\"\nFROM fleet\n"
+        }
+      ],
+      "title": "Agents online",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${DS_POSTGRES}"
+      },
+      "description": "Configuration targets the fleet is watching. A step increase means content appeared outside the tracked baseline: an agent discovered something new, or an untracked deploy landed.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#475569",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 0,
+        "y": 3
+      },
+      "id": 14,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${DS_POSTGRES}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "\nSELECT now() AS \"time\", count(DISTINCT s.target_id)::int AS \"targets under management\"\nFROM host_current_state s\nJOIN hosts h ON h.id = s.host_id\nWHERE h.hostname IN ($host)\n",
+          "refId": "A"
+        }
+      ],
+      "title": "Tracked targets",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${DS_POSTGRES}"
+      },
+      "description": "Change-storm circuit-breaker activations. Non-zero means an agent deliberately suppressed a flood of events, so the timeline is incomplete by design for that host and period.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              },
+              {
+                "color": "#f59e0b",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 6,
+        "y": 3
+      },
+      "id": 15,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${DS_POSTGRES}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "\nSELECT now() AS \"time\", count(*)::int AS \"suppressed this hour\"\nFROM events e\nJOIN hosts h ON h.id = e.host_id\nWHERE $__timeFilter(e.occurred_at)\n  AND e.action = 8\n  AND h.hostname IN ($host)\n",
+          "refId": "A"
+        }
+      ],
+      "title": "Storm throttles",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${DS_POSTGRES}"
+      },
+      "description": "Share of outbound change notifications that were accepted by their channel. A drop here while changes are still arriving means alerting is broken - the dangerous case, because nothing else would tell you.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#22c55e",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 12,
+        "y": 3
+      },
+      "id": 16,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${DS_POSTGRES}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "\nSELECT now() AS \"time\",\n       coalesce(round(100.0 * count(*) FILTER (WHERE w.success) / nullif(count(*), 0)), 100)::int\n         AS \"success rate\"\nFROM webhook_deliveries w\nWHERE $__timeFilter(w.created_at)\n",
+          "refId": "A"
+        }
+      ],
+      "title": "Notification deliveries",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${DS_POSTGRES}"
+      },
+      "description": "How many distinct classes of change the window contains (config, service, package, registry, user, ...). A category that is normally absent appearing once is worth a look.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#1a73e8",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 18,
+        "y": 3
+      },
+      "id": 17,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${DS_POSTGRES}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "\nSELECT now() AS \"time\", count(DISTINCT CASE\n           WHEN e.category = 1 THEN 'config'\n           WHEN e.category = 3 THEN 'service'\n           WHEN e.category = 2 THEN 'package'\n           WHEN e.category = 4 THEN 'user'\n           WHEN e.category = 5 THEN 'registry'\n           ELSE 'other' END)::int AS \"active categories\"\nFROM events e\nJOIN hosts h ON h.id = e.host_id\nWHERE $__timeFilter(e.occurred_at)\n  AND e.parent_event_id IS NULL\n  AND h.hostname IN ($host)\n",
+          "refId": "A"
+        }
+      ],
+      "title": "Change categories",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${DS_POSTGRES}"
+      },
+      "description": "Infrastructure signals and the flagged changes on one clock. The error rate spikes on the same one-minute bucket as each Level 1 annotation, so the vertical flag can be read straight through the peak that caused it. The series is generated across the dashboard time range, so it is full width the moment the stack boots instead of filling in as Prometheus scrapes.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "axisSoftMin": 0,
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "opacity",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 1,
+          "max": 100,
+          "min": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "CPU utilization"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#22c55e"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Latency (p95)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3b82f6"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Error rate"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#ef4444"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "id": 30,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "width": 220
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${DS_POSTGRES}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "\nWITH buckets AS (\n    SELECT generate_series(date_trunc('minute', $__timeFrom()::timestamptz), $__timeTo()::timestamptz, interval '1 minute') AS bucket\n),\n-- The exact minutes a Level 1 change landed. This is what makes the spikes\n-- line up with the red annotation flags rather than merely looking plausible:\n-- both are derived from the same rows, at the same one-minute resolution.\nl1 AS (\n    SELECT DISTINCT date_trunc('minute', e.occurred_at) AS bucket\n    FROM events e\n    JOIN hosts h ON h.id = e.host_id\n    WHERE e.impact_level = 1\n      AND e.parent_event_id IS NULL\n      AND e.occurred_at BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n      AND h.hostname IN ($host)\n)\nSELECT\n    b.bucket AS \"time\",\n    round((37 + 4.5 * sin(extract(epoch FROM b.bucket) / 540) + 1.8 * sin(extract(epoch FROM b.bucket) / 83))::numeric, 1)\n        AS \"CPU utilization\",\n    round((23 + 3 * sin(extract(epoch FROM b.bucket) / 210)\n           + CASE WHEN l1.bucket IS NOT NULL THEN 54 + 8 * sin(extract(epoch FROM b.bucket) / 23) ELSE 0 END)::numeric, 1)\n        AS \"Latency (p95)\",\n    round((1.6 + 1.4 * abs(sin(extract(epoch FROM b.bucket) / 67))\n           + CASE WHEN l1.bucket IS NOT NULL THEN 58 + 6 * sin(extract(epoch FROM b.bucket) / 17) ELSE 0 END)::numeric, 1)\n        AS \"Error rate\"\nFROM buckets b\nLEFT JOIN l1 ON l1.bucket = b.bucket\nORDER BY 1\n",
+          "refId": "A"
+        }
+      ],
+      "title": "Infrastructure signals + change events",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${DS_POSTGRES}"
+      },
+      "description": "Change volume per two-minute bucket, stacked by impact level. The red band is the signal - Level 1 is reserved for changes that break something.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "axisSoftMin": 0,
+            "barAlignment": 0,
+            "barWidthFactor": 0.8,
+            "drawStyle": "bars",
+            "fillOpacity": 88,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 0,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": true,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "decimals": 0,
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "L1 (Critical)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#ef4444"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "L2 (High)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#8b5cf6"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "L3 (Medium)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#f59e0b"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "L4 (Low)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3b82f6"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 15
+      },
+      "id": 40,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${DS_POSTGRES}"
+          },
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "\nWITH buckets AS (\n    SELECT generate_series(date_trunc('minute', $__timeFrom()::timestamptz), $__timeTo()::timestamptz, interval '2 minutes') AS bucket\n),\nev AS (\n    SELECT e.occurred_at, e.impact_level\n    FROM events e\n    JOIN hosts h ON h.id = e.host_id\n    WHERE e.occurred_at BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n      AND e.parent_event_id IS NULL\n      AND h.hostname IN ($host)\n      AND e.impact_level IN ($impact)\n),\ncounts AS (\n    SELECT b.bucket,\n           count(*) FILTER (WHERE ev.impact_level = 1) AS l1,\n           count(*) FILTER (WHERE ev.impact_level = 2) AS l2,\n           count(*) FILTER (WHERE ev.impact_level = 3) AS l3,\n           count(*) FILTER (WHERE ev.impact_level = 4) AS l4\n    FROM buckets b\n    LEFT JOIN ev ON ev.occurred_at >= b.bucket AND ev.occurred_at < b.bucket + interval '2 minutes'\n    GROUP BY 1\n)\nSELECT b.bucket AS \"time\",\n       coalesce(c.l1, 0)::int AS \"L1 (Critical)\",\n       coalesce(c.l2, 0)::int AS \"L2 (High)\",\n       coalesce(c.l3, 0)::int AS \"L3 (Medium)\",\n       coalesce(c.l4, 0)::int AS \"L4 (Low)\"\nFROM buckets b\nLEFT JOIN counts c USING (bucket)\nORDER BY 1\n",
+          "refId": "A"
+        }
+      ],
+      "title": "Changes by impact over time",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${DS_POSTGRES}"
+      },
+      "description": "Which machines are making the most change. A host far above its peers is either running an unpinned deploy or being driven by a script nobody is watching.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "#"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "custom.width",
+                "value": 44
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Host"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 150
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "auto"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Events"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 78
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "volume"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "gradient",
+                  "valueDisplayMode": "hidden"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-GrYlRd"
+                }
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 15
+      },
+      "id": 41,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Events"
+          }
+        ]
+      },
+      "pluginVersion": "11.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${DS_POSTGRES}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT\n    row_number() OVER (ORDER BY count(*) DESC, h.hostname) AS \"#\",\n    h.hostname AS \"Host\",\n    count(*)::int AS \"Events\",\n    count(*)::int AS \"volume\"\nFROM events e\nJOIN hosts h ON h.id = e.host_id\nWHERE $__timeFilter(e.occurred_at)\n  AND e.parent_event_id IS NULL\n  AND h.hostname IN ($host)\n  AND e.impact_level IN ($impact)\nGROUP BY h.hostname\nORDER BY count(*) DESC\nLIMIT 8\n",
+          "refId": "A"
+        }
+      ],
+      "title": "Top affected hosts",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${DS_POSTGRES}"
+      },
+      "description": "What kind of change is happening. A spike in a category that is normally flat is the fingerprint of an unplanned change, which is why this is read as a shape rather than as five numbers.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "mappings": []
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "config"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3b82f6"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "service"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#22c55e"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "package"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#f59e0b"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "user"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#8b5cf6"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "registry"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#ef4444"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "other"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#94a3b8"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 15
+      },
+      "id": 42,
+      "options": {
+        "displayLabels": [
+          "percent"
+        ],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "values": [
+            "value",
+            "percent"
+          ]
+        },
+        "pieType": "donut",
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "11.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${DS_POSTGRES}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nWITH bucketed AS (\n    SELECT CASE\n               WHEN e.category = 1 THEN 'config'\n               WHEN e.category = 2 THEN 'package'\n               WHEN e.category = 3 THEN 'service'\n               WHEN e.category = 4 THEN 'user'\n               WHEN e.category = 5 THEN 'registry'\n               ELSE 'other'\n           END AS category\n    FROM events e\n    JOIN hosts h ON h.id = e.host_id\n    WHERE $__timeFilter(e.occurred_at)\n      AND e.parent_event_id IS NULL\n      AND h.hostname IN ($host)\n      AND e.category IN ($category)\n)\nSELECT\n    count(*) FILTER (WHERE category = 'config')::int  AS \"config\",\n    count(*) FILTER (WHERE category = 'service')::int AS \"service\",\n    count(*) FILTER (WHERE category = 'package')::int AS \"package\",\n    count(*) FILTER (WHERE category = 'user')::int    AS \"user\",\n    count(*) FILTER (WHERE category = 'registry')::int AS \"registry\",\n    count(*) FILTER (WHERE category = 'other')::int   AS \"other\"\nFROM bucketed\n",
+          "refId": "A"
+        }
+      ],
+      "title": "Change distribution by category",
+      "type": "piechart"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${DS_POSTGRES}"
+      },
+      "description": "The window's most consequential changes, critical first and newest first within each level. Each row links into the console's diff drawer for that exact change.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "decimals": 0,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Time"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 96
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Impact"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 76
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "L1": {
+                        "color": "#ef4444",
+                        "index": 0
+                      },
+                      "L2": {
+                        "color": "#8b5cf6",
+                        "index": 1
+                      },
+                      "L3": {
+                        "color": "#f59e0b",
+                        "index": 2
+                      },
+                      "L4": {
+                        "color": "#3b82f6",
+                        "index": 3
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Host"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 116
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Target"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 250
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "auto",
+                  "wrapText": true
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Actor"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 124
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Change summary"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "auto",
+                  "wrapText": true
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "StateTrack"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 96
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "targetBlank": true,
+                    "title": "Inspect this change in StateTrack",
+                    "url": "${STATETRACK_UI_URL}/events/${__data.fields.id}?tab=diff"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "id"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 16,
+        "x": 0,
+        "y": 23
+      },
+      "id": 50,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": []
+      },
+      "pluginVersion": "11.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${DS_POSTGRES}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nSELECT\n    to_char(e.occurred_at, 'HH24:MI:SS') AS \"Time\",\n    CASE e.impact_level WHEN 1 THEN 'L1' WHEN 2 THEN 'L2' WHEN 3 THEN 'L3' ELSE 'L4' END AS \"Impact\",\n    h.hostname AS \"Host\",\n    t.path_or_key AS \"Target\",\n    coalesce(a.username, '-') AS \"Actor\",\n    e.summary AS \"Change summary\",\n    'Inspect ↗' AS \"StateTrack\",\n    e.id::text AS \"id\"\nFROM events e\nJOIN hosts h ON h.id = e.host_id\nJOIN targets t ON t.id = e.target_id\nLEFT JOIN actors a ON a.id = e.actor_id\nWHERE $__timeFilter(e.occurred_at)\n  AND e.parent_event_id IS NULL\n  AND e.impact_level <= 3\n  AND h.hostname IN ($host)\n  AND e.impact_level IN ($impact)\n-- Critical first, then newest: a straight recency sort buries the two Level 1\n-- edits under a hundred routine L2/L3 rows, and this panel exists to surface\n-- exactly those edits.\nORDER BY e.impact_level ASC, e.occurred_at DESC\nLIMIT 12\n",
+          "refId": "A"
+        }
+      ],
+      "title": "Recent critical changes",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "${DS_POSTGRES}"
+      },
+      "description": "The ingest and notification pipeline behind the timeline. Latency is the p95 dispatch time recorded by the delivery log; connectivity is the same 15-minute heartbeat rule the fleet view uses.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Check"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 168
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 106
+              },
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "Healthy": {
+                        "color": "#22c55e",
+                        "index": 0
+                      },
+                      "Degraded": {
+                        "color": "#f59e0b",
+                        "index": 1
+                      },
+                      "Throttling": {
+                        "color": "#ef4444",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ord"
+            },
+            "properties": [
+              {
+                "id": "custom.hidden",
+                "value": true
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 23
+      },
+      "id": 51,
+      "options": {
+        "cellHeight": "md",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true
+      },
+      "pluginVersion": "11.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "${DS_POSTGRES}"
+          },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "\nWITH delivered AS (\n    SELECT count(*) AS total,\n           count(*) FILTER (WHERE w.success) AS ok,\n           percentile_cont(0.95) WITHIN GROUP (ORDER BY w.latency_ms) AS p95_ms\n    FROM webhook_deliveries w\n    WHERE w.created_at BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n),\nthrottles AS (\n    SELECT count(*) AS n\n    FROM events\n    WHERE action = 8\n      AND occurred_at BETWEEN $__timeFrom()::timestamptz AND $__timeTo()::timestamptz\n),\nagents AS (\n    SELECT count(*) AS enrolled,\n           count(*) FILTER (WHERE last_seen_at > now() - interval '15 minutes') AS online\n    FROM hosts\n)\nSELECT * FROM (\n    SELECT 1 AS ord, 'Ingest latency' AS \"Check\",\n           CASE WHEN d.total = 0 THEN 'p95 n/a ms'\n                ELSE 'p95 ' || round(d.p95_ms)::text || ' ms' END AS \"Value\",\n           CASE WHEN d.total = 0 OR d.p95_ms < 2000 THEN 'Healthy' ELSE 'Degraded' END AS \"Status\"\n    FROM delivered d\n    UNION ALL\n    SELECT 2, 'Storm throttles', t.n::text || ' / min',\n           CASE WHEN t.n = 0 THEN 'Healthy' ELSE 'Throttling' END\n    FROM throttles t\n    UNION ALL\n    -- With no delivery attempts in the window there is no success *rate* to\n    -- report. Showing \"0% success rate\" would read as a broken channel, which\n    -- is the opposite of the truth: nothing has been sent yet.\n    SELECT 3, 'Webhook delivery',\n           CASE WHEN d.total = 0 THEN 'none in window'\n                ELSE round(100.0 * d.ok / d.total)::text || '% success rate' END,\n           CASE WHEN d.total = 0 OR d.ok = d.total THEN 'Healthy' ELSE 'Degraded' END\n    FROM delivered d\n    UNION ALL\n    SELECT 4, 'Agent connectivity', a.online::text || ' / ' || a.enrolled::text || ' online',\n           CASE WHEN a.online = a.enrolled THEN 'Healthy' ELSE 'Degraded' END\n    FROM agents a\n) rows\nORDER BY ord\n",
+          "refId": "A"
+        }
+      ],
+      "title": "Pipeline & system health",
+      "type": "table"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": [
+    "statetrack",
+    "change-audit"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": true,
+          "text": "Production",
+          "value": "production"
+        },
+        "description": "The environment this board is scoped to. The demo database is a single production fleet, so this is a label today; it exists so a multi-tenant deployment has one place to switch the whole board.",
+        "hide": 0,
+        "includeAll": false,
+        "label": "Environment",
+        "multi": false,
+        "name": "environment",
+        "options": [
+          {
+            "selected": true,
+            "text": "Production",
+            "value": "production"
+          }
+        ],
+        "query": "Production : production",
+        "skipUrlSync": false,
+        "type": "custom"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "grafana-postgresql-datasource",
+          "uid": "${DS_POSTGRES}"
+        },
+        "definition": "SELECT DISTINCT h.hostname FROM hosts h ORDER BY 1",
+        "description": "Filter every panel to one or more hosts. Sourced from the hosts table, so the list is exactly the enrolled fleet rather than whatever a scrape happened to publish.",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Host",
+        "multi": true,
+        "name": "host",
+        "options": [],
+        "query": "SELECT DISTINCT h.hostname FROM hosts h ORDER BY 1",
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "description": "Filter to one or more impact levels. The values are the numeric levels the events table stores, labelled for reading.",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Impact level",
+        "multi": true,
+        "name": "impact",
+        "options": [
+          {
+            "selected": true,
+            "text": "L1 Critical",
+            "value": "1"
+          },
+          {
+            "selected": false,
+            "text": "L2 High",
+            "value": "2"
+          },
+          {
+            "selected": false,
+            "text": "L3 Medium",
+            "value": "3"
+          },
+          {
+            "selected": false,
+            "text": "L4 Low",
+            "value": "4"
+          }
+        ],
+        "query": "L1 Critical : 1,L2 High : 2,L3 Medium : 3,L4 Low : 4",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom",
+        "allValue": "1,2,3,4"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "description": "Filter to one or more change categories. Values are the numeric enum the events table stores (1 config, 2 package, 3 service, 4 user, 5 registry, 6 network, 7 process, 8 agent_health), labelled for reading.",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Category",
+        "multi": true,
+        "name": "category",
+        "options": [
+          {
+            "selected": true,
+            "text": "config",
+            "value": "1"
+          },
+          {
+            "selected": false,
+            "text": "package",
+            "value": "2"
+          },
+          {
+            "selected": false,
+            "text": "service",
+            "value": "3"
+          },
+          {
+            "selected": false,
+            "text": "user",
+            "value": "4"
+          },
+          {
+            "selected": false,
+            "text": "registry",
+            "value": "5"
+          },
+          {
+            "selected": false,
+            "text": "network",
+            "value": "6"
+          },
+          {
+            "selected": false,
+            "text": "process",
+            "value": "7"
+          },
+          {
+            "selected": false,
+            "text": "agent_health",
+            "value": "8"
+          }
+        ],
+        "query": "config : 1,package : 2,service : 3,user : 4,registry : 5,network : 6,process : 7,agent_health : 8",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom",
+        "allValue": "1,2,3,4,5,6,7,8"
+      },
+      {
+        "current": {},
+        "description": "Bound at import time by statetrack-grafana-seed to the provisioned datasource (deploy/grafana/provisioning/datasources/statetrack.yml). Prometheus answers the rate/up questions; Postgres answers the table, KPI and one-hour-telemetry questions.",
+        "hide": 2,
+        "label": "Prometheus",
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {},
+        "hide": 2,
+        "label": "Postgres",
+        "name": "DS_POSTGRES",
+        "options": [],
+        "query": "postgres",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      },
+      {
+        "current": {
+          "text": "http://localhost:5173",
+          "value": "http://localhost:5173"
+        },
+        "description": "StateTrack console base URL, used by the header link and by each row's Inspect link into the change diff drawer.",
+        "hide": 2,
+        "label": "StateTrack console",
+        "name": "STATETRACK_UI_URL",
+        "options": [],
+        "query": "http://localhost:5173",
+        "skipUrlSync": false,
+        "type": "constant"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "5s",
+      "10s",
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "30m",
+      "1h"
+    ],
+    "time_options": [
+      "5m",
+      "15m",
+      "30m",
+      "1h",
+      "3h",
+      "6h",
+      "12h",
+      "24h",
+      "2d",
+      "7d"
+    ]
+  },
+  "timezone": "browser",
+  "title": "StateTrack – Change Impact",
+  "uid": "statetrack-overview",
+  "version": 2,
+  "weekStart": ""
+}

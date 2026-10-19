@@ -1,0 +1,318 @@
+name: release
+
+# Publishes a StateTrack release from a tag.
+#
+#   git tag -a v0.1.0 -m "StateTrack v0.1.0" && git push origin v0.1.0
+#
+# Three jobs:
+#   test      - gofmt, vet, unit tests, and a production console build. A tag
+#               is not a licence to skip verification.
+#   image     - builds the multi-stage Dockerfile and pushes
+#               ghcr.io/<owner>/<repo>:<tag> plus :latest. Buildx targets both
+#               amd64 and arm64 so an Apple-silicon or Graviton host can pull it.
+#   release   - cross-compiles the agent/server/MCP archives for Linux
+#               (amd64/arm64) and Windows (amd64), then creates the GitHub
+#               Release with every archive and SHA256SUMS.txt attached.
+#
+# The image is pushed before the release so the tag in the release notes always
+# resolves to a pullable image.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to publish (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write   # create the GitHub Release
+  packages: write   # push to ghcr.io
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: '1.26'
+  NODE_VERSION: '20'
+  REGISTRY: ghcr.io
+
+jobs:
+  test:
+    name: verify
+    runs-on: ubuntu-latest
+    services:
+      # The database-backed suites (migrations, bootstrap, ingestion, REST) skip
+      # themselves when this is absent. A release must run them.
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: statetrack
+          POSTGRES_PASSWORD: statetrack
+          POSTGRES_DB: statetrack
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U statetrack -d statetrack"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      # The e2e suite stores a >2 KB diff through the S3 router and reads it back.
+      seaweedfs:
+        image: chrislusf/seaweedfs:latest
+        ports:
+          - 8333:8333
+        # -ip.bind is required: SeaweedFS binds the S3 API to 127.0.0.1 by
+        # default, which a service container's published port cannot reach, so
+        # the suite would fail to connect rather than fail an assertion.
+        options: >-
+          --health-cmd "wget -qO- http://localhost:8333/ >/dev/null || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 30
+        command: server -dir=/data -ip.bind=0.0.0.0 -s3 -s3.port=8333
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            pkg/go.sum
+            agent/go.sum
+            server/go.sum
+
+      - name: gofmt
+        run: |
+          out="$(gofmt -l pkg agent server)"
+          if [ -n "$out" ]; then
+            echo "gofmt needed for:"; echo "$out"; exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./pkg/... ./agent/... ./server/...
+
+      - name: go test
+        # A service container gives the database-backed tests something to run
+        # against. Without it they call t.Skip, so the release could ship with a
+        # broken migration or a login path that never selects the password hash
+        # and still show a green tick — both bugs that shipped in this release
+        # and were caught only by the assertions below running for real.
+        env:
+          STATETRACK_TEST_DATABASE_URL: postgres://statetrack:statetrack@localhost:5432/statetrack?sslmode=disable
+        run: go test ./pkg/... ./agent/... ./server/...
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: web build
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+  image:
+    name: image (${{ matrix.image }} / ${{ matrix.arch }})
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: server
+            dockerfile: ./Dockerfile
+            arch: amd64
+            platform: linux/amd64
+          - image: server
+            dockerfile: ./Dockerfile
+            arch: arm64
+            platform: linux/arm64
+          # The node agent is a separate image: it ships one binary and cannot
+          # read a database DSN or serve an API. deploy/k8s/ pulls this tag.
+          - image: agent
+            dockerfile: ./deploy/docker/Dockerfile.agent
+            arch: amd64
+            platform: linux/amd64
+          - image: agent
+            dockerfile: ./deploy/docker/Dockerfile.agent
+            arch: arm64
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          # workflow_dispatch supplies a tag explicitly; a tag push supplies ref_name.
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          if [ "${{ matrix.image }}" = "agent" ]; then
+            echo "repo=statetrack-agent" >> "$GITHUB_OUTPUT"
+          else
+            echo "repo=statetrack" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          # One platform per runner: emulating arm64 through QEMU for a full Go
+          # compile plus a Vite build is slow enough to time out, and a native
+          # runner per architecture is both faster and more reliable.
+          platforms: ${{ matrix.platform }}
+          push: true
+          build-args: |
+            VERSION=${{ steps.version.outputs.tag }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ steps.version.outputs.date }}
+          # Per-architecture tags only. The manifest job merges them into the
+          # single-arch-looking `:<tag>` and `:latest` index consumers pull; two
+          # jobs pushing the same tag would race and leave only the last arch.
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ steps.version.outputs.repo }}:${{ steps.version.outputs.tag }}-${{ matrix.arch }}
+          labels: |
+            org.opencontainers.image.title=StateTrack${{ matrix.image == 'agent' && ' Agent' || '' }}
+            org.opencontainers.image.description=${{ matrix.image == 'agent' && 'StateTrack host agent: change collection with edge secret scrubbing.' || 'Infrastructure change intelligence: what changed, who changed it, and why.' }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.version.outputs.tag }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=Apache-2.0
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
+
+  manifest:
+    name: multi-arch manifests
+    needs: image
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: [statetrack, statetrack-agent]
+    steps:
+      - name: Resolve version
+        id: version
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge per-architecture images
+        run: |
+          repo="${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.repo }}"
+          tag="${{ steps.version.outputs.tag }}"
+          docker buildx imagetools create \
+            -t "$repo:$tag" \
+            -t "$repo:latest" \
+            "$repo:$tag-amd64" \
+            "$repo:$tag-arm64"
+
+      - name: Inspect
+        run: docker buildx imagetools inspect "${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.repo }}:${{ steps.version.outputs.tag }}"
+
+  release:
+    name: github release
+    needs: [test, manifest]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: |
+            pkg/go.sum
+            agent/go.sum
+            server/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Resolve version
+        id: version
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      # scripts/release.sh builds the console, stages it into the server embed,
+      # cross-compiles every binary, and writes SHA256SUMS.txt. Running the same
+      # script a developer runs is the point: the release cannot drift from it.
+      - name: Build release archives
+        env:
+          STATETRACK_COMMIT: ${{ github.sha }}
+          STATETRACK_BUILD_DATE: ${{ steps.version.outputs.date }}
+        run: |
+          chmod +x scripts/release.sh
+          ./scripts/release.sh "${{ steps.version.outputs.tag }}"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.version.outputs.tag }}"
+          notes="RELEASE_NOTES_$tag.md"
+
+          # The archives are rebuilt here, so their hashes cannot be the ones
+          # committed in the notes: git commit timestamps and build timestamps
+          # differ between a developer's run and this one. Publishing a table
+          # that disagrees with the served SHA256SUMS.txt is worse than no table
+          # at all, so the `### Checksums` block is regenerated from the files
+          # that are actually being uploaded. The helper is a file rather than an
+          # inline heredoc because a shell heredoc would sit at column zero and
+          # terminate this YAML block scalar.
+          python3 scripts/sync_release_checksums.py "$notes" "dist/$tag/SHA256SUMS.txt"
+
+          # Idempotent on purpose: the same commit can be published by hand
+          # (`gh release create ... dist/<tag>/*`) and then pushed, which runs
+          # this workflow for the same tag. Creating twice would fail the run
+          # after the images were already pushed, so an existing release is
+          # updated instead — assets are replaced, not duplicated.
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "release $tag already exists; uploading assets"
+            gh release upload "$tag" dist/"$tag"/* --clobber
+            if [ -f "$notes" ]; then
+              gh release edit "$tag" --notes-file "$notes"
+            fi
+          elif [ ! -f "$notes" ]; then
+            echo "::warning::$notes not found; falling back to generated notes"
+            gh release create "$tag" dist/"$tag"/* \
+              --title "StateTrack $tag" \
+              --generate-notes
+          else
+            gh release create "$tag" dist/"$tag"/* \
+              --title "StateTrack $tag — Infrastructure Change Intelligence" \
+              --notes-file "$notes"
+          fi
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: statetrack-release-${{ steps.version.outputs.tag }}
+          path: dist/${{ steps.version.outputs.tag }}/*
+          retention-days: 30

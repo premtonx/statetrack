@@ -1,0 +1,239 @@
+# StateTrack — production compose stack.
+#
+#   docker compose up -d --build
+#
+# What you get on a fresh volume:
+#   * Postgres 17 with a healthcheck and a persistent volume
+#   * statetrack-server on :8080 (console + REST/WS API + /metrics) and
+#     :50051 (agent gRPC), which migrates itself on first boot
+#   * an EMPTY database: 0 hosts, 0 events. Enrol a host from
+#     Settings → Agents, or load the demo timeline with `make seed`.
+#
+# The first administrator's credentials are printed once in the server log:
+#
+#   docker compose logs statetrack-server | grep administrator
+#
+# ...or set STATETRACK_ADMIN_EMAIL / STATETRACK_ADMIN_PASSWORD (see .env.example)
+# to choose them yourself.
+#
+# Optional profiles:
+#   docker compose --profile monitoring up -d     # Grafana :3000, Prometheus
+#                                                 # :9090, Checkmk :5000/cmk
+#   docker compose --profile demo run --rm statetrack-seed   # seed the demo fleet
+name: statetrack
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-statetrack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-statetrack}
+      POSTGRES_DB: ${POSTGRES_DB:-statetrack}
+    ports:
+      # Published for local tooling (`make psql`, a GUI client). Remove this
+      # mapping in a deployment that does not need host access to the database.
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  statetrack-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VERSION: ${STATETRACK_VERSION:-v0.1.0}
+    # Set STATETRACK_IMAGE to run a published image instead of building locally:
+    #   STATETRACK_IMAGE=ghcr.io/premtonx/statetrack:v0.1.0 docker compose up -d
+    image: ${STATETRACK_IMAGE:-statetrack:local}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-statetrack}:${POSTGRES_PASSWORD:-statetrack}@postgres:5432/${POSTGRES_DB:-statetrack}?sslmode=disable
+      HTTP_ADDR: ":8080"
+      GRPC_ADDR: ":50051"
+      # The console is embedded in the binary and served on the same origin as
+      # the API, so this is the URL Grafana annotations deep-link into.
+      STATETRACK_UI_URL: ${STATETRACK_UI_URL:-http://localhost:8080}
+      # Clean first boot. `make seed` loads the demo fleet; the demo heartbeat
+      # that keeps those seeded hosts "online" is this switch, so it stays off
+      # unless you deliberately turn it on.
+      STATETRACK_DEMO_MODE: ${STATETRACK_DEMO_MODE:-0}
+      STATETRACK_AUTO_MIGRATE: "1"
+      STATETRACK_SERVE_UI: "1"
+      # Long enough to survive a session cookie across restarts. Set this in
+      # production; the server logs a warning and uses a per-boot key otherwise.
+      STATETRACK_SESSION_SECRET: ${STATETRACK_SESSION_SECRET:-}
+      # Choose the first administrator instead of reading a generated password
+      # from the log. Leave empty to have one generated.
+      STATETRACK_ADMIN_EMAIL: ${STATETRACK_ADMIN_EMAIL:-}
+      STATETRACK_ADMIN_PASSWORD: ${STATETRACK_ADMIN_PASSWORD:-}
+      # Diff blobs. The compose quickstart runs without S3 and stores large
+      # diffs inline; point this at SeaweedFS/MinIO/S3 to offload them.
+      S3_ENDPOINT: ${S3_ENDPOINT:-none}
+      S3_BUCKET: ${S3_BUCKET:-statetrack-diffs}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+      S3_REGION: ${S3_REGION:-us-east-1}
+    ports:
+      - "${STATETRACK_HTTP_PORT:-8080}:8080"
+      - "${STATETRACK_GRPC_PORT:-50051}:50051"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      start_period: 25s
+      retries: 5
+
+  # ------------------------------------------------------------------ demo --
+  # `docker compose --profile demo run --rm statetrack-seed` seeds the demo
+  # fleet against this stack. It compiles the seeder in a throwaway Go
+  # container, so the runtime image stays a single static binary and an
+  # evaluator with no Go toolchain still gets a populated timeline.
+  #
+  # It is a profile service, not part of `up`: a production boot must never
+  # write demo hosts into a fresh database.
+  statetrack-seed:
+    profiles: ["demo"]
+    image: golang:1.26-alpine
+    depends_on:
+      statetrack-server:
+        condition: service_healthy
+    working_dir: /src
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-statetrack}:${POSTGRES_PASSWORD:-statetrack}@postgres:5432/${POSTGRES_DB:-statetrack}?sslmode=disable
+      STATETRACK_DEMO_MODE: "1"
+      CGO_ENABLED: "0"
+      GOFLAGS: -buildvcs=false
+    volumes:
+      - .:/src
+      - statetrack-gomod:/go/pkg/mod
+      - statetrack-gocache:/root/.cache/go-build
+    command: ["go", "run", "./server/cmd/statetrack-seed"]
+    restart: "no"
+
+  # ------------------------------------------------------------ monitoring --
+  # Prometheus scrapes the server's own /metrics (statetrack_mutations_total)
+  # and a node_exporter, which together are the two halves of the Grafana hero
+  # panel. Optional because a change-audit deployment does not need a metrics
+  # stack, and starting one on every `up` would double the idle footprint.
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=24h
+      - --log.level=warn
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/ready >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    command:
+      - --collector.disable-defaults
+      - --collector.cpu
+      - --collector.loadavg
+      - --collector.meminfo
+    ports:
+      - "${NODE_EXPORTER_PORT:-9100}:9100"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9100/-/healthy >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  grafana:
+    image: grafana/grafana-oss:latest
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_USERS_DEFAULT_THEME: dark
+      # Interpolation inputs for provisioning/datasources/statetrack.yml: the
+      # Postgres datasource reads the same credentials the postgres service was
+      # started with, so a .env override changes both sides at once.
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER:-statetrack}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-statetrack}
+      POSTGRES_DB: ${POSTGRES_DB:-statetrack}
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - grafanadata:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/health >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  # Checkmk Raw, driving the repository's own check_statetrack.py against the
+  # server's summary API. Start it by name (which bypasses the profile) and
+  # provision the hosts:
+  #
+  #   docker compose --profile monitoring up -d checkmk
+  #   .\scripts\provision_checkmk.ps1        # or make checkmk
+  checkmk:
+    image: checkmk/check-mk-raw:2.3.0-latest
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      CMK_SITE_ID: ${CHECKMK_SITE_ID:-cmk}
+      CMK_PASSWORD: ${CHECKMK_PASSWORD:-statetrack}
+      CMK_LIVESTATUS_TCP: "on"
+      TZ: ${TZ:-Europe/Berlin}
+    ports:
+      - "${CHECKMK_PORT:-5000}:5000"
+    volumes:
+      - cmkdata:/omd/sites
+      # Mounted at a staging path rather than inside the site directory: `omd
+      # create` refuses a site path that already exists, so a bind mount under
+      # /omd/sites/cmk would break first boot. The post-start hook links them in
+      # once the site exists.
+      - ./integrations/checkmk/check_statetrack.py:/opt/statetrack/check_statetrack.py:ro
+      - ./deploy/checkmk/statetrack_agent_wrapper.sh:/opt/statetrack/statetrack_agent_wrapper.sh:ro
+      - ./deploy/checkmk/hooks/post-start/10-statetrack.sh:/docker-entrypoint.d/post-start/10-statetrack.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5000/cmk/ >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 60s
+
+volumes:
+  pgdata:
+  grafanadata:
+  promdata:
+  cmkdata:
+  statetrack-gomod:
+  statetrack-gocache:

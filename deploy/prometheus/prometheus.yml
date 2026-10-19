@@ -1,0 +1,68 @@
+# Prometheus for the local StateTrack demo stack.
+#
+# Two jobs, and they are the two halves of the hero panel on the provisioned
+# Grafana dashboard:
+#
+#   statetrack  -> the StateTrack server's own /metrics endpoint. This is where
+#                  statetrack_mutations_total{level="L1"} comes from: the red
+#                  bars that mark critical configuration changes.
+#   exporters   -> node_exporter (and, on a Windows host, windows_exporter).
+#                  This is the left-axis service-health line the mutations are
+#                  correlated against.
+#
+#   scrape_configs:
+#     - job_name: node
+#         static_configs: [{ targets: ["node-exporter:9100"] }]
+#     - job_name: windows_exporter
+#         static_configs: [{ targets: ["windows-exporter:9182"] }]
+#
+# A target that is up is scraped normally; a target that is absent simply
+# produces no series, which is why the dashboard's exporter-up line is written
+# as `max(up{job=~"..."}) or vector(1)` — the panel still draws a clean line
+# when no exporter is running.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: statetrack-demo
+
+scrape_configs:
+  # StateTrack server: the change-audit half of the picture.
+  #
+  # host.docker.internal resolves to the Docker Desktop host from inside a
+  # container, which is where `dev.ps1 run-server` listens (:8080). On Linux
+  # the extra_hosts mapping below provides the same name via host-gateway.
+  - job_name: statetrack
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["host.docker.internal:8080"]
+        labels:
+          source: statetrack-server
+    # The server seeds its counters from Postgres at startup, so a scrape that
+    # lands before the first agent batch still reports the fleet's real state.
+    scrape_timeout: 5s
+
+  # node_exporter: the host-health half. Bunched with windows_exporter under a
+  # shared `job` regex so the dashboard's fallback line can match both.
+  - job_name: node_exporter
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          os_family: linux
+
+  # windows_exporter on a Windows host. Not started by docker-compose (a
+  # container cannot see the host's Windows services), so point the target at a
+  # real instance — e.g. host.docker.internal:9182 — when you have one running.
+  # Until then this job is simply empty and the hero panel's fallback line
+  # keeps the left axis meaningful.
+  - job_name: windows_exporter
+    static_configs:
+      - targets: ["host.docker.internal:9182"]
+        labels:
+          os_family: windows
+
+  # Prometheus itself, so `up` has a series on a fresh stack and the
+  # exporter-up fallback always has something to draw.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

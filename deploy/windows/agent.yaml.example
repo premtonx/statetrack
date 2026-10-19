@@ -1,0 +1,212 @@
+# ============================================================================
+# StateTrack agent — annotated Windows Server example
+# ============================================================================
+#
+# Copy to C:\ProgramData\StateTrack\agent.yaml and restrict it to SYSTEM and
+# Administrators (it holds the enrollment token):
+#
+#   icacls C:\ProgramData\StateTrack\agent.yaml /inheritance:r `
+#     /grant:r "SYSTEM:(F)" "Administrators:(F)"
+#   Restart-Service StateTrackAgent
+#
+# Full reference: docs/agent-deployment-guide.md
+# Environment variables override this file (STATETRACK_*). A Windows service
+# reads its environment from the registry, or from a wrapper that sets them.
+#
+# YAML note: Windows paths contain backslashes and drive colons. Either quote
+# them ("C:\ProgramData") or use forward slashes (C:/ProgramData). An unquoted
+# C:\... is not valid YAML.
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# Identity & location
+# ---------------------------------------------------------------------------
+
+# Stable host identity. Empty derives it from the machine name. Set it
+# explicitly when a host is rebuilt often and its history should survive.
+host_id: ""
+
+state_dir: C:\ProgramData\StateTrack
+log_level: info
+
+# ---------------------------------------------------------------------------
+# Server / transport
+# ---------------------------------------------------------------------------
+
+server:
+  address: statetrack.internal.example.com:50051
+  token: ""
+  org: production
+
+  # mTLS (optional).
+  # ca_file:   C:\ProgramData\StateTrack\ca.pem
+  # cert_file: C:\ProgramData\StateTrack\agent.pem
+  # key_file:  C:\ProgramData\StateTrack\agent-key.pem
+
+# ---------------------------------------------------------------------------
+# Filesystem watch scope
+# ---------------------------------------------------------------------------
+# The Windows defaults are shown. IIS configuration lives in inetsrv\config,
+# scheduled tasks in System32\Tasks, and application configuration under
+# ProgramData — those three are where an unaudited change usually lands.
+
+watch:
+  paths:
+    - C:\Windows\System32\inetsrv\config
+    - C:\Windows\System32\drivers\etc
+    - C:\Windows\System32\Tasks
+    - C:\ProgramData
+
+  exclude:
+    - C:\ProgramData\StateTrack\**
+    - C:\Windows\System32\inetsrv\config\schema\**
+    - C:\Windows\Temp\**
+    - C:\Windows\Logs\**
+
+  critical:
+    - C:\Windows\System32\drivers\etc\hosts
+    - C:\Windows\System32\Tasks\**
+
+# ---------------------------------------------------------------------------
+# Offline queue
+# ---------------------------------------------------------------------------
+
+spool:
+  max_mb: 200
+
+# ---------------------------------------------------------------------------
+# Day-0 baseline
+# ---------------------------------------------------------------------------
+
+baseline:
+  pace: 1ms
+
+# ---------------------------------------------------------------------------
+# Windows collectors
+# ---------------------------------------------------------------------------
+# registry: tracked keys, reported as /registry/HKLM/... document paths.
+# services: enabled/start-type changes, reported as /service/<name>.
+# msi:      installs and removals from the MsiInstaller events (1033/1034).
+# security_audit: Security log 4657/4663 records, used to attribute a registry
+#           or file change to the account that made it. Those records only
+#           exist where object-access auditing and SACLs are configured; with
+#           none, attribution falls back to the process tree.
+
+windows:
+  registry:
+    enabled: true
+    keys:
+      - HKLM\SOFTWARE
+      - HKLM\SYSTEM\CurrentControlSet\Services
+      - HKLM\SYSTEM\CurrentControlSet\Control\Lsa
+      - HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run
+  services:
+    enabled: true
+    source: auto            # auto | registry | scm
+    poll_interval: 5s
+  msi:
+    enabled: true
+  security_audit:
+    enabled: true
+
+# ---------------------------------------------------------------------------
+# IIS application pools & sites
+# ---------------------------------------------------------------------------
+# A pool's runtime state is not in applicationHost.config: IIS stops an idle
+# pool after 20 minutes, and a failed rapid-fail-protection stop happens
+# without any file changing. This watcher polls the state, so a pool that
+# stopped is reported as a change even when the config never moved.
+#
+# Accepted spellings for each target (they are equivalent):
+#   CheckoutAppPool
+#   iis://apppool/CheckoutAppPool
+#   Checkout*                        (glob)
+#
+# watch_all: true is deliberately off by default. Watching every pool turns
+# routine idle recycling into a stream of Level 1 events.
+
+iis:
+  enabled: true
+  # watch_all: false
+  # application_host: C:\Windows\System32\inetsrv\config\applicationHost.config
+  pools:
+    - iis://apppool/CheckoutAppPool
+    - OrderWorkerPool
+  sites:
+    - iis://site/Default Web Site
+  interval: 30s
+
+# ---------------------------------------------------------------------------
+# Read-only database watcher (SQL Server & PostgreSQL)
+# ---------------------------------------------------------------------------
+# Every statement is a SELECT: the watcher snapshots the rows of the named
+# tables, the table/column/privilege DDL, and the non-default runtime server
+# parameters. "Who changed the setting in settings_db" therefore has an answer
+# with a before/after diff instead of a ticket trail.
+#
+# Create a login that can do nothing but read:
+#
+#   CREATE LOGIN statetrack_ro WITH PASSWORD = '...';
+#   CREATE USER  statetrack_ro FOR LOGIN statetrack_ro;
+#   GRANT CONNECT SQL TO statetrack_ro;
+#   GRANT VIEW DEFINITION TO statetrack_ro;   -- schema snapshot
+#   GRANT SELECT ON dbo.app_settings TO statetrack_ro;
+#
+# The DSN is a credential. Prefer STATETRACK_DATABASE_DSN from the environment
+# over writing it here.
+
+database:
+  enabled: true
+  interval: 60s
+  connections:
+    - name: settings
+      engine: sqlserver
+      dsn: "sqlserver://statetrack_ro:CHANGEME@sql.internal:1433?database=settings_db"
+      database: settings_db
+      tables:
+        - dbo.app_settings
+        - dbo.feature_flags
+      watch_schema: true
+      watch_server_params: true
+      row_limit: 500
+
+# ---------------------------------------------------------------------------
+# Kubernetes (inert on a Windows host — kept for a shared template)
+# ---------------------------------------------------------------------------
+
+kubernetes:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# Linux collectors (inert on Windows)
+# ---------------------------------------------------------------------------
+
+systemd:
+  enabled: false
+
+packages:
+  enabled: false
+
+# ---------------------------------------------------------------------------
+# Hot-reload & forensic window
+# ---------------------------------------------------------------------------
+
+reload_interval: 30s
+
+# forensic_until: 2026-10-18T23:59:00Z
+
+# ---------------------------------------------------------------------------
+# Custom classification policy
+# ---------------------------------------------------------------------------
+# rules:
+#   - name: iis-runtime
+#     target_type: iis
+#     pattern: "iis://apppool/CheckoutAppPool"
+#     level: 1
+#     diff: true
+#     tags: [iis, checkout]
+#   - name: run-key
+#     target_type: registry
+#     pattern: "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run\\**"
+#     level: 1
+#     tags: [persistence]

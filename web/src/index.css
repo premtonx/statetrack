@@ -1,0 +1,118 @@
+@import 'tailwindcss';
+
+/*
+ * StateTrack console — Google Cloud Console / Workspace aesthetic.
+ * Light-mode first: off-white canvas, crisp white cards, subtle borders and
+ * micro-shadows. Dark mode is intentionally not supported by the shell.
+ */
+@theme {
+  --font-sans:
+    'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  --font-mono:
+    'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas,
+    'Liberation Mono', monospace;
+
+  /* Google brand tokens (also available as bg-g-blue / text-g-amber / …). */
+  --color-g-blue: #1a73e8;
+  --color-g-green: #1e8e3e;
+  --color-g-red: #d93025;
+  --color-g-amber: #f9ab00;
+  --color-g-purple: #7c3aed;
+
+  /* Soft, slate-tinted micro-shadow used on cards. */
+  --shadow-xs: 0 1px 2px 0 rgb(15 23 42 / 0.05);
+}
+
+html {
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-slate-50 text-slate-900 antialiased;
+  font-family: var(--font-sans);
+  font-feature-settings: 'cv11', 'ss01';
+}
+
+/* Subtle scrollbars consistent with the console aesthetic. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(148 163 184 / 0.45) transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgb(148 163 184 / 0.45);
+  border-radius: 9999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgb(100 116 139 / 0.55);
+}
+
+/* Keyboard shortcut badge (⌘K) inside the universal search field. */
+.kbd {
+  @apply rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[10px] font-medium text-slate-400;
+}
+
+/* Mark redacted secret stubs inside the diff editor. */
+.monaco-redacted-line {
+  background: rgb(251 191 36 / 0.12) !important;
+  border-left: 3px solid rgb(245 158 11) !important;
+}
+
+/* Shared entrance animations for drawers, menus and panels. */
+@keyframes drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+.drawer-enter {
+  animation: drawer-in 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.panel-enter {
+  animation: panel-in 0.14s ease-out;
+}
+
+@keyframes backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.drawer-backdrop {
+  animation: backdrop-in 0.2s ease-out;
+}
+
+/* Reports: "Download PDF" renders the report body through the print dialog. */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: #fff;
+  }
+}

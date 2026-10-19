@@ -1,0 +1,93 @@
+# StateTrack — 10-second quickstart (no clone, no toolchain).
+#
+#   curl -fsSLO https://raw.githubusercontent.com/premtonx/statetrack/main/deploy/docker-compose.quickstart.yml
+#   docker compose -f docker-compose.quickstart.yml up -d
+#
+# Then open http://localhost:8080 and sign in. The first administrator's
+# password is generated on first boot and printed once:
+#
+#   docker compose -f docker-compose.quickstart.yml logs statetrack | grep administrator
+#
+# ...or set STATETRACK_ADMIN_EMAIL and STATETRACK_ADMIN_PASSWORD below to pick
+# your own before the first start.
+#
+# This file is deliberately self-contained: one Postgres, one StateTrack
+# container, one volume. It does not need the repository, and the image is
+# pre-built, so nothing is compiled.
+#
+# Production notes:
+#   * Change POSTGRES_PASSWORD (and keep STATETRACK_SESSION_SECRET set) before
+#     exposing the port beyond localhost.
+#   * Put TLS in front of :8080 (Caddy, nginx, or a cloud load balancer); the
+#     console and the API share the port.
+#   * Agent gRPC is :50051. Enrol hosts from Settings → Agents.
+name: statetrack
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: statetrack
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-statetrack}
+      POSTGRES_DB: statetrack
+    volumes:
+      - statetrack-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U statetrack -d statetrack"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  statetrack:
+    # Pin the tag for a reproducible deployment; `latest` is the rolling
+    # default so this file always matches the current release.
+    image: ${STATETRACK_IMAGE:-ghcr.io/premtonx/statetrack:latest}
+    # Fallback for an air-gapped host or a fork that has not published an image:
+    # run this file from a checkout of the repository, point STATETRACK_IMAGE at
+    # a local tag, uncomment the block below and build once.
+    #
+    #   git clone https://github.com/premtonx/statetrack.git && cd statetrack
+    #   STATETRACK_IMAGE=statetrack:local docker compose \
+    #     -f deploy/docker-compose.quickstart.yml build
+    #
+    # It is commented out because this file is normally downloaded *without* the
+    # repository, so an active `build:` would fail on a missing context instead
+    # of pulling the published image.
+    # build:
+    #   context: ../..
+    #   dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://statetrack:${POSTGRES_PASSWORD:-statetrack}@postgres:5432/statetrack?sslmode=disable
+      STATETRACK_UI_URL: ${STATETRACK_UI_URL:-http://localhost:8080}
+      # Start clean: 0 hosts, 0 events. Enrol your first agent from
+      # Settings → Agents.
+      STATETRACK_DEMO_MODE: "0"
+      # Signs console session cookies. Generated per boot when empty (sessions
+      # then end on restart), so set it for anything long-lived.
+      STATETRACK_SESSION_SECRET: ${STATETRACK_SESSION_SECRET:-}
+      # Optional: choose the bootstrap administrator instead of reading the
+      # generated password from the log.
+      STATETRACK_ADMIN_EMAIL: ${STATETRACK_ADMIN_EMAIL:-}
+      STATETRACK_ADMIN_PASSWORD: ${STATETRACK_ADMIN_PASSWORD:-}
+      # Large diff blobs are stored inline when no S3 endpoint is configured.
+      S3_ENDPOINT: "none"
+    ports:
+      - "${STATETRACK_PORT:-8080}:8080"
+      - "${STATETRACK_GRPC_PORT:-50051}:50051"
+    volumes:
+      - statetrack-data:/var/lib/statetrack
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      start_period: 25s
+      retries: 5
+
+volumes:
+  statetrack-pgdata:
+  statetrack-data:

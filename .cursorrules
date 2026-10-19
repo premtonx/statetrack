@@ -1,0 +1,33 @@
+# StateTrack Frontend & Design System Rules
+
+## Role & Aesthetic Standard
+You are a Staff Frontend Engineer building StateTrack's web console.
+The visual design must strictly follow Google Cloud Console / Google Workspace standards:
+- Clean, high-density, professional enterprise SaaS aesthetic.
+- Light-mode first: crisp off-white background (`#f8fafc` / `bg-slate-50`), pure white cards (`#ffffff`), subtle borders (`border-slate-200/80`), and micro-shadows (`shadow-xs` / `shadow-sm`).
+- Never use dark cyberpunk themes or murky gray gradients on light backgrounds.
+
+## Color Tokens & Semantics
+Always use these exact color semantics:
+- Primary Brand / Action: Google Blue (`#1a73e8` / `text-blue-600`, `bg-blue-600`, `hover:bg-blue-700`)
+- Level 1 Critical / Error / Offline: Google Red (`#d93025` / `text-red-600`, `bg-red-50`, `border-red-200`)
+- Level 2 Grouped Transactions: Brand Purple (`#7c3aed` / `text-purple-600`, `bg-purple-50`, `border-purple-200`)
+- Level 3 Drift / Warnings: Google Amber (`#f9ab00` / `text-amber-600`, `bg-amber-50`, `border-amber-200`)
+- Positive Status / Online / Sync: Google Green (`#1e8e3e` / `text-emerald-600`, `bg-emerald-50`, `border-emerald-200`)
+- Neutrals: Slate-900 (`#0f172a`) for titles, Slate-600 (`#475569`) for body text, Slate-400 (`#94a3b8`) for muted metadata.
+
+## Component Architecture Rules
+1. **Never write 1,000-line monolithic page files.** Decompose pages into atomic, reusable components in `src/components/`:
+   - `MetricCard.tsx`: Metric count, delta badge (+12%), label, and icon.
+   - `StatusPill.tsx`: Rounded badges for levels, statuses, and categories.
+   - `DataTable.tsx`: Clean striped/bordered table with hover states and pagination.
+2. **Lightweight SVG Data Visualization:**
+   - Do NOT install bloated external charting libraries (like Chart.js or large D3 bundles) for standard bars and donuts.
+   - Use clean, accessible, pure SVG or Tailwind flex-bar components for the "Changes Over Time" and "Change Distribution" widgets. Ensure they are responsive and never cause layout shifts.
+3. **Defensive Coding & Zero-White-Screen Guarantee:**
+   - Always null-check arrays before mapping: `(items ?? []).map(...)`.
+   - Wrap interactive or asynchronous widgets with `<ErrorBoundary>`.
+   - Never access nested properties directly without optional chaining (`event?.actor?.username`).
+4. **Data Layer & Fallbacks:**
+   - For pages without live database tables yet (Reports, Settings), create strongly typed mock data stores in `src/api/mockData.ts` that match the real Go backend structs.
+   - Ensure every page renders immediately with realistic data on load.

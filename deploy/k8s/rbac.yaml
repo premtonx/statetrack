@@ -1,0 +1,99 @@
+# Read-only RBAC for the StateTrack Kubernetes watcher.
+#
+# The agent is a *monitoring* agent: it must be structurally incapable of
+# changing the cluster it watches. Every verb below is get/list/watch, and the
+# collector's client (agent/internal/collectors/k8s/client.go) only ever issues
+# GETs. There is no `create`, `update`, `patch` or `delete` anywhere in this
+# file, on purpose — a security team should be able to verify that by reading
+# one document.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: statetrack-agent
+  namespace: statetrack
+  labels:
+    app.kubernetes.io/name: statetrack-agent
+    app.kubernetes.io/component: kubernetes-watcher
+---
+# Cluster-scoped read of the configuration objects the catalog watches:
+# ConfigMaps and Secrets (core group), Deployments and StatefulSets (apps),
+# and Ingresses (networking.k8s.io).
+#
+# A Secret read is a real privilege, and it is deliberately the reason edge
+# scrubbing exists: the agent redacts every `data`, `stringData` and
+# `binaryData` value with a salted `[REDACTED:sha256:...]` stub before the
+# document is hashed, cached, diffed, or sent to the server. No secret payload
+# leaves the cluster in cleartext, and the server never sees the plaintext.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: statetrack-agent-watcher
+  labels:
+    app.kubernetes.io/name: statetrack-agent
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: statetrack-agent-watcher
+  labels:
+    app.kubernetes.io/name: statetrack-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: statetrack-agent-watcher
+subjects:
+  - kind: ServiceAccount
+    name: statetrack-agent
+    namespace: statetrack
+---
+# Least-privilege alternative: scope the watcher to named namespaces with a
+# Role + RoleBinding instead of the ClusterRoleBinding above.
+#
+# The agent lists each configured namespace in its own request (see
+# kubernetes.namespaces in the ConfigMap), which is what makes a namespace-
+# scoped Role sufficient. Comment out the ClusterRoleBinding above and uncomment
+# this block for a team that will not grant a cluster-wide Secret read.
+#
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: Role
+# metadata:
+#   name: statetrack-agent-watcher
+#   namespace: production
+# rules:
+#   - apiGroups: [""]
+#     resources: ["configmaps", "secrets"]
+#     verbs: ["get", "list", "watch"]
+#   - apiGroups: ["apps"]
+#     resources: ["deployments", "statefulsets"]
+#     verbs: ["get", "list", "watch"]
+#   - apiGroups: ["networking.k8s.io"]
+#     resources: ["ingresses"]
+#     verbs: ["get", "list", "watch"]
+---
+# apiVersion: rbac.authorization.k8s.io/v1
+# kind: RoleBinding
+# metadata:
+#   name: statetrack-agent-watcher
+#   namespace: production
+# roleRef:
+#   apiGroup: rbac.authorization.k8s.io
+#   kind: Role
+#   name: statetrack-agent-watcher
+# subjects:
+#   - kind: ServiceAccount
+#     name: statetrack-agent
+#     namespace: statetrack

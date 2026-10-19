@@ -1,0 +1,81 @@
+# StateTrack Kubernetes configuration watcher.
+#
+# This is the cluster-side half of the Kubernetes extension: one Deployment per
+# cluster (not one per node) watches ConfigMaps, Secrets, Deployments,
+# StatefulSets and Ingresses through the API server, serializes them to
+# canonical YAML, redacts every Secret value at the edge, and feeds them into
+# the same Myers diff engine and shadow cache the Linux and Windows collectors
+# use.
+#
+# One replica, deliberately: scaling the watcher would make the same object
+# change be reported by every replica. When leader election is needed for
+# availability, it can be added without changing what is watched.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: statetrack-cluster-watcher
+  namespace: statetrack
+  labels:
+    app.kubernetes.io/name: statetrack-agent
+    app.kubernetes.io/component: kubernetes-watcher
+spec:
+  replicas: 1
+  # Recreate rather than RollingUpdate: two watchers overlapping for a few
+  # seconds would double-report the changes in that window.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: statetrack-agent
+      app.kubernetes.io/component: kubernetes-watcher
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: statetrack-agent
+        app.kubernetes.io/component: kubernetes-watcher
+    spec:
+      serviceAccountName: statetrack-agent
+      containers:
+        - name: watcher
+          image: ghcr.io/premtonx/statetrack-agent:latest
+          args: ["--config", "/etc/statetrack/agent.yaml"]
+          env:
+            - name: STATETRACK_KUBERNETES_CLUSTER
+              value: prod-k8s-01
+          volumeMounts:
+            - name: config
+              mountPath: /etc/statetrack
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/statetrack
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              memory: 192Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # The liveness probe only proves the process is alive; a watcher that
+          # cannot reach the API server keeps retrying by design rather than
+          # crash-looping, because a brief API outage is not a reason to lose
+          # the baseline it has already built.
+          livenessProbe:
+            exec:
+              command: ["/usr/local/bin/statetrack-agent", "--version"]
+            initialDelaySeconds: 10
+            periodSeconds: 60
+      volumes:
+        - name: config
+          configMap:
+            name: statetrack-agent
+            items:
+              - key: cluster-agent.yaml
+                path: agent.yaml
+        - name: state
+          emptyDir: {}

@@ -1,0 +1,263 @@
+# ============================================================================
+# StateTrack agent — annotated Linux example
+# ============================================================================
+#
+# Copy to /etc/statetrack/agent.yaml, mode 0600, owner root:root:
+#
+#   sudo install -m 0600 -o root -g root agent.yaml.example /etc/statetrack/agent.yaml
+#   sudo systemctl restart statetrack-agent
+#
+# Every value below is a *default* unless it is uncommented. The file is
+# re-read every `reload_interval`, and the agent hot-reloads watch rules,
+# log_level and the forensic window without a restart. Anything else needs:
+#
+#   sudo systemctl restart statetrack-agent
+#
+# Full reference: docs/agent-deployment-guide.md
+# Environment variables override this file (STATETRACK_*).
+# ============================================================================
+
+# ---------------------------------------------------------------------------
+# Identity & location
+# ---------------------------------------------------------------------------
+
+# Stable host identity. Leave empty to derive it from /etc/machine-id and then
+# the hostname. Set it explicitly when a host is rebuilt often and you want its
+# change history to survive the rebuild.
+host_id: ""
+
+# Where the shadow index, redaction salt and offline spool live. Must be
+# writable and persistent.
+state_dir: /var/lib/statetrack
+
+# debug | info | warn | error
+log_level: info
+
+# ---------------------------------------------------------------------------
+# Server / transport
+# ---------------------------------------------------------------------------
+
+server:
+  # gRPC endpoint of the central server. Required.
+  address: statetrack.internal.example.com:50051
+
+  # Enrollment token from the console (Settings -> Agents). Reserved for
+  # server-side authentication; the installers write it here.
+  token: ""
+
+  # Organization / tenant label.
+  org: production
+
+  # mTLS (optional). When all three are set the agent presents a client
+  # certificate and verifies the server against the supplied CA.
+  # ca_file:   /etc/statetrack/ca.pem
+  # cert_file: /etc/statetrack/agent.pem
+  # key_file:  /etc/statetrack/agent-key.pem
+
+# ---------------------------------------------------------------------------
+# Filesystem watch scope
+# ---------------------------------------------------------------------------
+
+watch:
+  # `paths` REPLACES the built-in defaults; `extra_paths` appends to them.
+  # Both accept globs. The Linux defaults are:
+  #   /etc, /usr/local/etc, /etc/systemd/system, /var/spool/cron,
+  #   /root/.ssh, /home/*/.ssh
+  paths:
+    - /etc
+    - /usr/local/etc
+    - /etc/systemd/system
+    - /var/spool/cron
+    - /root/.ssh
+    - /home/*/.ssh
+
+  # Narrow the scope for a busy host. Anything matching an exclude glob is
+  # never hashed, never read and never reported (Level 0).
+  exclude:
+    - /etc/ssl/certs/**
+    - /etc/ssl/private/**
+    - /var/lib/statetrack/**
+    - /etc/ld.so.cache
+    - /etc/mtab
+    - /etc/resolv.conf
+
+  # Force Level 1 (critical) even if the classifier would say otherwise.
+  critical:
+    - /etc/sudoers
+    - /etc/sudoers.d/**
+    - /etc/ssh/sshd_config
+    - /etc/pam.d/**
+    - /etc/systemd/system/*.service
+
+# ---------------------------------------------------------------------------
+# Offline queue
+# ---------------------------------------------------------------------------
+
+spool:
+  # Cap for the on-disk spool. When the server is unreachable the agent keeps
+  # collecting and replays in order once the connection returns; the oldest
+  # events are dropped only if this cap is reached.
+  max_mb: 200
+
+# ---------------------------------------------------------------------------
+# Day-0 baseline
+# ---------------------------------------------------------------------------
+
+baseline:
+  # Sleep after each file during the initial walk, to bound CPU and I/O on a
+  # large /etc. 1ms is a reasonable default; 0 removes the throttle entirely.
+  pace: 1ms
+
+# ---------------------------------------------------------------------------
+# Linux collectors
+# ---------------------------------------------------------------------------
+
+systemd:
+  enabled: true
+  # Glob patterns of units whose enabled/active state is tracked.
+  units: ["*.service", "*.timer", "*.socket"]
+
+packages:
+  enabled: true
+  # Override only when a distribution keeps its history somewhere unusual.
+  # dpkg_log: /var/log/dpkg.log
+  # dnf_log:  /var/log/dnf.log
+  # yum_log:  /var/log/yum.log
+  # apk_log:  /var/log/apk.log
+  # apk_db:   /lib/apk/db/installed
+
+# ---------------------------------------------------------------------------
+# Windows collectors (inert on Linux — kept here so one file can be templated)
+# ---------------------------------------------------------------------------
+
+windows:
+  registry:
+    enabled: true
+    keys:
+      - HKLM\SOFTWARE
+      - HKLM\SYSTEM\CurrentControlSet\Services
+  services:
+    enabled: true
+    source: auto            # auto | registry | scm
+    poll_interval: 5s
+  msi:
+    enabled: true
+  security_audit:
+    enabled: true
+
+# ---------------------------------------------------------------------------
+# IIS application pools & sites (Windows)
+# ---------------------------------------------------------------------------
+# The file watcher sees applicationHost.config change; this watcher sees a pool
+# that stopped while the config file stayed the same. Targets named here are
+# merged with the watched targets an operator adds in the console.
+#
+# Accepted spellings, all equivalent:
+#   CheckoutAppPool
+#   iis://apppool/CheckoutAppPool
+#   Checkout*                       (glob)
+
+iis:
+  enabled: true
+  # watch_all: false             # true is noisy: IIS recycles idle pools
+  # application_host: C:\Windows\System32\inetsrv\config\applicationHost.config
+  # pools:
+  #   - iis://apppool/CheckoutAppPool
+  #   - OrderWorkerPool
+  # sites:
+  #   - iis://site/Default Web Site
+  interval: 30s
+
+# ---------------------------------------------------------------------------
+# Read-only database watcher (PostgreSQL & SQL Server)
+# ---------------------------------------------------------------------------
+# Every statement this collector issues is a SELECT. Prefer
+# STATETRACK_DATABASE_DSN over writing a credential into this file, and give
+# the account nothing beyond CONNECT + SELECT on the watched tables.
+
+database:
+  enabled: true
+  interval: 60s
+  # connections:
+  #   - name: settings
+  #     engine: postgres
+  #     dsn: "postgres://statetrack_ro:CHANGEME@db.internal:5432/settings_db?sslmode=require"
+  #     database: settings_db
+  #     tables:
+  #       - public.app_settings
+  #       - public.feature_flags
+  #     watch_schema: true
+  #     watch_server_params: true
+  #     row_limit: 500
+  #
+  #   - name: billing
+  #     engine: sqlserver
+  #     dsn: "sqlserver://sa:CHANGEME@sql.internal:1433?database=billing"
+  #     tables:
+  #       - dbo.tariffs
+  #     interval: 120s
+  #
+  # A literal DSN in this file is a credential on disk. Prefer the environment
+  # (systemd EnvironmentFile, a container secret, or a Windows service env) and
+  # leave `connections` out entirely:
+  #
+  #   STATETRACK_DATABASE_DSN=postgres://statetrack_ro:...@db.internal:5432/settings_db
+  #   STATETRACK_DATABASE_ENGINE=postgres
+  #   STATETRACK_DATABASE_NAME=settings_db
+  #   STATETRACK_DATABASE_TABLES=public.app_settings,public.feature_flags
+
+# ---------------------------------------------------------------------------
+# Kubernetes (cluster watcher)
+# ---------------------------------------------------------------------------
+# Off by default: a host that is not a cluster node has nothing to watch. The
+# cluster watcher runs as a Deployment (see deploy/k8s/deployment.yaml) and
+# reads the API server through its service account, so no credential belongs
+# in this file.
+
+kubernetes:
+  enabled: false
+  # cluster: prod-k8s-01
+  # namespaces:
+  #   - default
+  #   - production
+  # resync_interval: 10m
+
+# ---------------------------------------------------------------------------
+# Hot-reload window
+# ---------------------------------------------------------------------------
+
+reload_interval: 30s
+
+# ---------------------------------------------------------------------------
+# Level 4 forensic capture window
+# ---------------------------------------------------------------------------
+# Enables full-content capture (not just a diff) until this RFC 3339 instant.
+# Capped at 15 minutes from when it is applied, so a forgotten window cannot
+# run forever.
+
+# forensic_until: 2026-10-18T23:59:00Z
+
+# ---------------------------------------------------------------------------
+# Custom classification policy
+# ---------------------------------------------------------------------------
+# Matched against a change's target (path, registry key or document path).
+# Exact patterns are tried before globs; the first declared match wins.
+# Level 0 drops the event entirely; 1-4 are the standard impact levels.
+#
+# rules:
+#   - name: nginx-edge-config
+#     target_type: file
+#     pattern: /etc/nginx/nginx.conf
+#     level: 1
+#     diff: true
+#     tags: [network, edge]
+#   - name: nginx-vhosts
+#     pattern: "/etc/nginx/conf.d/*.conf"
+#     level: 2
+#     diff: true
+#   - name: web-content
+#     pattern: "/var/www/**"
+#     level: 3
+#   - name: certbot-noise
+#     pattern: "/etc/letsencrypt/**"
+#     level: 0

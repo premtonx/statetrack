@@ -1,0 +1,57 @@
+# Build output
+/bin/
+/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.*
+
+# Local agent state / test artifacts
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.zst
+*.log
+*.pid
+
+# Local probe and debug scratch files (never part of a release)
+probe*.js
+mod.js
+g.json
+q*.json
+zoom.png
+
+# Python bytecode from running the integration scripts in a checkout
+__pycache__/
+*.py[cod]
+
+# Secrets and local overrides
+.env
+.env.*
+!.env.example
+
+# Frontend
+node_modules/
+web/dist/
+
+# Release staging (the archives are attached to a GitHub release, not committed)
+/dist/
+.stage-*/
+
+# The //go:embed target has to exist for `go build ./server/...` to compile on a
+# fresh checkout, so its README is committed. Everything a real build stages
+# there stays ignored — the console ships inside the binary, not in git.
+!/server/internal/webui/dist/
+/server/internal/webui/dist/*
+!/server/internal/webui/dist/README.txt
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

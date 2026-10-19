@@ -1,0 +1,47 @@
+# Keep the build context small and deterministic.
+#
+# The console build is what dominates a Docker build: node_modules is hundreds of
+# megabytes and web/dist is regenerated inside the image anyway, so sending
+# either over the context costs minutes and lets a stale local build leak into a
+# release.
+.git
+.github
+.cursor
+.cursorrules
+
+# Local build output
+bin/
+dist/
+web/dist/
+web/node_modules/
+agent/internal/**/*.test
+
+# Local state and artifacts
+*.db
+*.db-wal
+*.db-shm
+*.exe
+*.log
+*.out
+*.zst
+
+# Secrets and local overrides
+.env
+.env.*
+!.env.example
+deploy/seaweedfs/s3.json
+
+# Docs, screenshots and demo material: not needed to compile or run
+docs/
+infograph.jpg
+spec.md
+*.mp4
+
+# Editor and OS noise
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local CI/release output
+dist/

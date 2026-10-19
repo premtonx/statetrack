@@ -1,0 +1,372 @@
+# StateTrack Zabbix template — Zabbix 6.4 / 7.0
+#
+# Import via: Data collection -> Templates -> Import, then link
+# "StateTrack host by HTTP" to your Linux and Windows hosts.
+#
+# Design: ONE HTTP Agent master item polls the StateTrack unified summary
+# endpoint once per minute. Every other item is a dependent item that runs
+# JSONPath preprocessing over the master's already-fetched JSON. Zabbix does no
+# additional network I/O for them, so adding monitors costs CPU only — which is
+# what makes a single-poll template viable for a large fleet.
+#
+#   master:  statetrack.host.summary
+#              GET {$STATETRACK.URL}/api/v1/hosts/{HOST.HOST}/summary?window={$STATETRACK.WINDOW}
+#   dependents: statetrack.agent.online, statetrack.changes.*, ...
+#
+# {HOST.HOST} means the Zabbix host name must match the StateTrack hostname (or
+# be a StateTrack host UUID). See README.md for macro configuration.
+zabbix_export:
+  version: '6.4'
+  template_groups:
+    - uuid: c2b1a7f0d4e54f0f9d3a8b6c1e2f4a90
+      name: Templates/StateTrack
+  templates:
+    - uuid: 7f6e5d4c3b2a1908f7e6d5c4b3a29180
+      template: StateTrack host by HTTP
+      name: StateTrack host by HTTP
+      description: |
+        Monitors a single host's configuration-change activity through the
+        StateTrack unified host summary endpoint.
+
+        One HTTP Agent master item polls the API every {$STATETRACK.WINDOW};
+        all other items are dependent and parsed from that JSON with zero extra
+        requests. Requires Zabbix 6.4 or newer.
+
+        Configuration macros (set on the template or per host):
+          {$STATETRACK.URL}      StateTrack server base URL
+          {$STATETRACK.TOKEN}    API bearer token
+          {$STATETRACK.WINDOW}   Change lookback window (15m, 1h, 7d)
+          {$STATETRACK.UI_URL}   Console base URL, for event deep links
+          {$STATETRACK.CRIT_L1}  Warn threshold for L1 critical changes (default 1)
+          {$STATETRACK.WARN_DRIFT}  Warn threshold for L3 drift changes (default 5)
+      groups:
+        - name: Templates/StateTrack
+      items:
+        # ------------------------------------------------------------------- #
+        # Master item: the only thing that touches the network.               #
+        # ------------------------------------------------------------------- #
+        - uuid: 1a2b3c4d5e6f708192a3b4c5d6e7f801
+          name: 'StateTrack: host summary (master)'
+          type: HTTP_AGENT
+          key: statetrack.host.summary
+          delay: 1m
+          history: 1h
+          trends:
+            enabled: false
+          value_type: TEXT
+          description: |
+            Raw JSON rollup from GET /api/v1/hosts/{HOST.HOST}/summary.
+            Retained for 1h so an operator can inspect the exact payload an
+            alert fired on. Dependent items below parse this value; they do not
+            re-request the API.
+          url: '{$STATETRACK.URL}/api/v1/hosts/{HOST.HOST}/summary?window={$STATETRACK.WINDOW}'
+          output_format: JSON
+          timeout: 10s
+          headers:
+            Authorization: 'Bearer {$STATETRACK.TOKEN}'
+            Accept: application/json
+          status_codes: '200'
+          preprocessing:
+            # A 200 carrying an HTML login page would otherwise make every
+            # dependent item silently unsupported. Fail the master item loudly
+            # instead, so the cause is obvious in Latest data.
+            - type: CHECK_JSON_ERROR
+              error_handler: DISCARD_VALUE
+              error_handler_params: ''
+          tags:
+            - tag: component
+              value: statetrack
+
+        # ------------------------------------------------------------------- #
+        # Dependent items — JSONPath only, no extra I/O.                      #
+        # ------------------------------------------------------------------- #
+        - uuid: 1a2b3c4d5e6f708192a3b4c5d6e7f802
+          name: 'StateTrack: agent online'
+          type: DEPENDENT
+          key: statetrack.agent.online
+          delay: 0
+          history: 7d
+          value_type: UNSIGNED
+          description: '1 when the StateTrack agent reported within its heartbeat window, else 0.'
+          master_item:
+            key: statetrack.host.summary
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.online
+            - type: BOOLEAN_TO_DECIMAL
+          tags:
+            - tag: component
+              value: statetrack
+
+        - uuid: 1a2b3c4d5e6f708192a3b4c5d6e7f803
+          name: 'StateTrack: critical changes (L1)'
+          type: DEPENDENT
+          key: statetrack.changes.critical
+          delay: 0
+          history: 7d
+          value_type: UNSIGNED
+          description: 'Root Level 1 (critical mutation) changes inside the window.'
+          master_item:
+            key: statetrack.host.summary
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.counts.l1_critical'
+          tags:
+            - tag: component
+              value: statetrack
+
+        - uuid: 1a2b3c4d5e6f708192a3b4c5d6e7f804
+          name: 'StateTrack: grouped changes (L2)'
+          type: DEPENDENT
+          key: statetrack.changes.grouped
+          delay: 0
+          history: 7d
+          value_type: UNSIGNED
+          description: 'Root Level 2 transactions (package/config-manager operations) inside the window.'
+          master_item:
+            key: statetrack.host.summary
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.counts.l2_grouped'
+          tags:
+            - tag: component
+              value: statetrack
+
+        - uuid: 1a2b3c4d5e6f708192a3b4c5d6e7f805
+          name: 'StateTrack: drift changes (L3)'
+          type: DEPENDENT
+          key: statetrack.changes.drift
+          delay: 0
+          history: 7d
+          value_type: UNSIGNED
+          description: 'Root Level 3 (drift) changes inside the window.'
+          master_item:
+            key: statetrack.host.summary
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.counts.l3_drift'
+          tags:
+            - tag: component
+              value: statetrack
+
+        - uuid: 1a2b3c4d5e6f708192a3b4c5d6e7f806
+          name: 'StateTrack: drift targets'
+          type: DEPENDENT
+          key: statetrack.drift.targets
+          delay: 0
+          history: 7d
+          value_type: UNSIGNED
+          units: 'targets'
+          description: 'Configuration targets currently tracked in the host inventory.'
+          master_item:
+            key: statetrack.host.summary
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.drift_targets_count'
+            # Older servers may omit the field; normalise to 0 rather than
+            # marking the item unsupported.
+            - type: JAVASCRIPT
+              parameters:
+                - 'return (value === "" || value === null) ? 0 : value;'
+          tags:
+            - tag: component
+              value: statetrack
+
+        - uuid: 1a2b3c4d5e6f708192a3b4c5d6e7f807
+          name: 'StateTrack: latest critical summary'
+          type: DEPENDENT
+          key: statetrack.latest.summary
+          delay: 0
+          history: 7d
+          value_type: CHARACTER
+          description: 'Human-readable summary of the newest critical change (empty when there is none).'
+          master_item:
+            key: statetrack.host.summary
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.latest_critical.summary'
+          tags:
+            - tag: component
+              value: statetrack
+
+        - uuid: 1a2b3c4d5e6f708192a3b4c5d6e7f808
+          name: 'StateTrack: latest critical actor'
+          type: DEPENDENT
+          key: statetrack.latest.actor
+          delay: 0
+          history: 7d
+          value_type: CHARACTER
+          description: 'Actor (user and tool) behind the newest critical change.'
+          master_item:
+            key: statetrack.host.summary
+          preprocessing:
+            # actor and tool are separate JSON fields, so concatenate. An empty
+            # actor must not leave a dangling " via ".
+            - type: JSONPATH
+              parameters:
+                - '$.latest_critical.actor'
+            - type: JAVASCRIPT
+              parameters:
+                - 'return (value === "" || value === null) ? "" : value;'
+          tags:
+            - tag: component
+              value: statetrack
+
+        - uuid: 1a2b3c4d5e6f708192a3b4c5d6e7f809
+          name: 'StateTrack: latest critical deep link'
+          type: DEPENDENT
+          key: statetrack.latest.link
+          delay: 0
+          history: 7d
+          value_type: CHARACTER
+          description: 'Console deep link that opens the diff drawer for the newest critical change.'
+          master_item:
+            key: statetrack.host.summary
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.latest_critical.deep_link'
+          tags:
+            - tag: component
+              value: statetrack
+
+        - uuid: 1a2b3c4d5e6f708192a3b4c5d6e7f80a
+          name: 'StateTrack: latest critical tool'
+          type: DEPENDENT
+          key: statetrack.latest.tool
+          delay: 0
+          history: 7d
+          value_type: CHARACTER
+          description: 'Process or tool that performed the newest critical change.'
+          master_item:
+            key: statetrack.host.summary
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.latest_critical.tool'
+          tags:
+            - tag: component
+              value: statetrack
+
+        - uuid: 1a2b3c4d5e6f708192a3b4c5d6e7f80b
+          name: 'StateTrack: latest critical target'
+          type: DEPENDENT
+          key: statetrack.latest.target
+          delay: 0
+          history: 7d
+          value_type: CHARACTER
+          description: 'Path or registry key modified by the newest critical change.'
+          master_item:
+            key: statetrack.host.summary
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.latest_critical.target'
+          tags:
+            - tag: component
+              value: statetrack
+
+      triggers:
+        # High: a Level 1 critical mutation is the whole point of the product.
+        # `manual_close` keeps it on the board until an operator has actually
+        # looked at the diff — auto-resolving when the window rolls over would
+        # hide an unreviewed production change.
+        - uuid: 2b3c4d5e6f708192a3b4c5d6e7f8012
+          expression: 'last(/StateTrack host by HTTP/statetrack.changes.critical) >= {$STATETRACK.CRIT_L1}'
+          name: 'StateTrack: critical configuration mutation detected on {HOST.HOST}'
+          event_name: 'Critical config change on {HOST.HOST}'
+          opdata: 'actor={ITEM.LASTVALUE="statetrack.latest.actor"} target={ITEM.LASTVALUE="statetrack.latest.target"} tool={ITEM.LASTVALUE="statetrack.latest.tool"} link={ITEM.LASTVALUE="statetrack.latest.link"}'
+          url: '{$STATETRACK.UI_URL}'
+          priority: HIGH
+          description: |
+            {HOST.HOST} recorded a Level 1 (critical) configuration mutation.
+
+              Actor:   {ITEM.LASTVALUE="statetrack.latest.actor"}
+              Tool:    {ITEM.LASTVALUE="statetrack.latest.tool"}
+              Target:  {ITEM.LASTVALUE="statetrack.latest.target"}
+              Summary: {ITEM.LASTVALUE="statetrack.latest.summary"}
+
+            Open the change and review the diff:
+              {ITEM.LASTVALUE="statetrack.latest.link"}
+          manual_close: 'YES'
+          tags:
+            - tag: scope
+              value: availability
+            - tag: component
+              value: statetrack
+            - tag: severity
+              value: critical
+
+        # Average: silence is ambiguous. The agent may be stopped, the host
+        # may be unreachable, or the token may have expired — all of which mean
+        # changes are no longer being captured, which is a monitoring blind spot
+        # rather than an outage.
+        - uuid: 2b3c4d5e6f708192a3b4c5d6e7f8013
+          expression: 'last(/StateTrack host by HTTP/statetrack.agent.online) = 0'
+          name: 'StateTrack: agent offline on {HOST.HOST}'
+          event_name: 'StateTrack agent offline on {HOST.HOST}'
+          opdata: 'online={ITEM.LASTVALUE="statetrack.agent.online"}'
+          priority: AVERAGE
+          description: |
+            The StateTrack agent on {HOST.HOST} has not reported inside its
+            heartbeat window. Configuration changes on this host are NOT being
+            captured until it recovers.
+
+            Check the statetrack-agent service, outbound gRPC connectivity to
+            the server, and the agent's spool backlog.
+          tags:
+            - tag: scope
+              value: availability
+            - tag: component
+              value: statetrack
+
+        # Warning: sustained drift means unmanaged change is accumulating.
+        - uuid: 2b3c4d5e6f708192a3b4c5d6e7f8014
+          expression: 'last(/StateTrack host by HTTP/statetrack.changes.drift) >= {$STATETRACK.WARN_DRIFT}'
+          name: 'StateTrack: configuration drift detected on {HOST.HOST}'
+          event_name: 'Config drift detected on {HOST.HOST}'
+          opdata: 'drift={ITEM.LASTVALUE="statetrack.changes.drift"} targets={ITEM.LASTVALUE="statetrack.drift.targets"}'
+          priority: WARNING
+          description: |
+            {HOST.HOST} recorded {ITEM.LASTVALUE="statetrack.changes.drift"} Level 3
+            (drift) changes in the last {$STATETRACK.WINDOW}, across
+            {ITEM.LASTVALUE="statetrack.drift.targets"} tracked targets.
+
+            Some drift is normal during a deploy. A sustained rate indicates
+            changes happening outside the change pipeline.
+          tags:
+            - tag: scope
+              value: performance
+            - tag: component
+              value: statetrack
+
+      macros:
+        - macro: '{$STATETRACK.URL}'
+          value: 'http://statetrack-server:8080'
+          description: 'StateTrack server base URL (no trailing slash).'
+        - macro: '{$STATETRACK.UI_URL}'
+          value: 'http://statetrack-console:5173'
+          description: 'Console base URL used for event deep links.'
+        - macro: '{$STATETRACK.TOKEN}'
+          value: ''
+          type: SECRET_TEXT
+          description: 'API bearer token. Set per host or per host group; leave blank for an unauthenticated dev server.'
+        - macro: '{$STATETRACK.WINDOW}'
+          value: '15m'
+          description: 'Change lookback window: 15m, 1h, 24h, 7d.'
+        - macro: '{$STATETRACK.CRIT_L1}'
+          value: '1'
+          description: 'Fire the High trigger when L1 critical changes in the window reach this count.'
+        - macro: '{$STATETRACK.WARN_DRIFT}'
+          value: '5'
+          description: 'Fire the Warning trigger when L3 drift changes in the window reach this count.'
+
+      tags:
+        - tag: class
+          value: software

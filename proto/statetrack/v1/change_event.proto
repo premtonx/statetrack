@@ -1,0 +1,157 @@
+syntax = "proto3";
+package statetrack.v1;
+option go_package = "github.com/statetrack/statetrack/pkg/pb/statetrackv1";
+
+enum ImpactLevel {
+  IMPACT_LEVEL_UNSPECIFIED = 0;
+  IMPACT_LEVEL_1_CRITICAL = 1;
+  IMPACT_LEVEL_2_GROUPED = 2;
+  IMPACT_LEVEL_3_DRIFT = 3;
+  IMPACT_LEVEL_4_FORENSIC = 4;
+}
+
+enum Category {
+  CATEGORY_UNSPECIFIED = 0;
+  CATEGORY_CONFIG = 1;
+  CATEGORY_PACKAGE = 2;
+  CATEGORY_SERVICE = 3;
+  CATEGORY_USER = 4;
+  CATEGORY_REGISTRY = 5;
+  CATEGORY_NETWORK = 6;
+  CATEGORY_PROCESS = 7;
+  CATEGORY_AGENT_HEALTH = 8;
+}
+
+enum Action {
+  ACTION_UNSPECIFIED = 0;
+  ACTION_CREATED = 1;
+  ACTION_MODIFIED = 2;
+  ACTION_DELETED = 3;
+  ACTION_RESTARTED = 4;
+  ACTION_STARTED = 5;
+  ACTION_STOPPED = 6;
+  ACTION_UPGRADED = 7;
+  ACTION_THROTTLED = 8;
+}
+
+message ActorContext {
+  string username = 1;
+  string uid_or_sid = 2;
+  string login_uid = 3;         // Original human UID before sudo/su
+  uint32 pid = 4;
+  uint32 ppid = 5;
+  string process_name = 6;
+  string cmdline = 7;
+  repeated string process_lineage = 8; // e.g., ["sshd", "bash", "sudo", "vim"]
+  string remote_ip = 9;         // SSH_CLIENT or RDP session IP
+  string login_username = 10;   // Username for login_uid (the human behind sudo/su)
+}
+
+message TargetResource {
+  string target_type = 1;       // "file", "registry", "service", "package"
+  string path_or_key = 2;
+  string hash_before = 3;
+  string hash_after = 4;
+  int64 size_before = 5;
+  int64 size_after = 6;
+  string version_before = 7;
+  string version_after = 8;
+}
+
+message MutationEvent {
+  string event_id = 1;          // UUIDv7 (time-sortable)
+  string parent_event_id = 2;   // Empty if root event
+  string host_id = 3;
+  int64 agent_timestamp_ms = 4;
+  uint64 monotonic_seq = 5;
+  ImpactLevel level = 6;
+  Category category = 7;
+  Action action = 8;
+  string summary = 9;
+  ActorContext actor = 10;
+  TargetResource target = 11;
+  bytes unified_diff_zstd = 12; // Zstd-compressed unified diff (scrubbed of secrets)
+  uint32 child_count = 13;      // Number of collapsed child events
+  map<string, string> metadata = 14;
+}
+
+// DiscoveredWorkload is a production workload the agent auto-discovered on
+// the host (an IIS site, an nginx vhost, a database instance, ...). It is
+// reported on the periodic heartbeat so the server can surface a
+// recommendation to onboard the workload with a granular policy rule.
+message DiscoveredWorkload {
+  // "iis_site" | "nginx_vhost" | "mssql_instance" | "postgres_db" | "redis".
+  string type = 1;
+  // Human-friendly instance name, e.g. "Default Web Site" or "MSSQL$PROD".
+  string name = 2;
+  // Config root or primary config file, e.g.
+  // "C:\inetpub\wwwroot\checkout\web.config".
+  string config_path = 3;
+  // Suggested impact level (1 = critical, 3 = drift, ...).
+  int32 suggested_level = 4;
+  // Whether a text diff should be captured for this workload's config.
+  bool suggested_diff = 5;
+  // Why the level was suggested, e.g. "Active HTTPS site on port 443".
+  string reason = 6;
+  // The embedded enterprise catalog entry that produced this discovery, so
+  // the console can group by application and a recommendation can be traced
+  // back to the knowledge base that generated it.
+  string entry_id = 7;
+  // The catalog entry's human application name, e.g. "Nginx", "IIS".
+  string application = 8;
+  // The runtime environment the workload was found in:
+  // "linux" | "windows" | "docker" | "kubernetes".
+  string runtime = 9;
+  // Kubernetes namespace, for cluster-scoped discoveries.
+  string namespace = 10;
+}
+
+// PolicyRule is a granular per-mutation classification override. It is
+// authored server-side (from an accepted recommendation or by an operator)
+// and pushed down to the agent on every batch acknowledgement.
+message PolicyRule {
+  // Stable, human-readable rule id, e.g. "checkout-app-l1".
+  string name = 1;
+  // Target type the rule applies to ("file", "registry", "service", ...);
+  // empty matches any target type.
+  string target_type = 2;
+  // Wildcard glob matched against the target path or key ("" matches any).
+  string pattern = 3;
+  // Override impact level. 0 = hard drop (Level 0 blacklist).
+  int32 level = 4;
+  // Whether a text diff should be captured.
+  bool diff = 5;
+  // Free-form tags surfaced on the event ("checkout", "prod", ...).
+  repeated string tags = 6;
+}
+
+message IngestBatchRequest {
+  string host_id = 1;
+  int64 agent_sent_ms = 2;
+  repeated MutationEvent events = 3;
+  // Host registration metadata, sent with every batch (idempotent upsert).
+  // host_id remains the stable per-install identifier; hostname is the OS
+  // hostname used for display and host upsert.
+  string hostname = 4;
+  string os_family = 5;   // 'linux' | 'windows'
+  string os_version = 6;
+  string agent_version = 7;
+  // Workloads auto-discovered on the host; sent on the periodic heartbeat
+  // (and opportunistically with any batch). Idempotently upserted server-side
+  // into host_recommendations.
+  repeated DiscoveredWorkload workloads = 8;
+}
+
+message IngestBatchResponse {
+  repeated string ack_event_ids = 1;
+  int64 server_time_ms = 2;
+  string desired_config_hash = 3;
+  int64 forensic_mode_until_ms = 4; // If > current time, enable Level 4
+  // The host's active granular policy rules. The agent applies these
+  // (replacing any previous set) on every acknowledgement.
+  repeated PolicyRule policy_rules = 5;
+}
+
+service IngestionService {
+  rpc IngestBatch(IngestBatchRequest) returns (IngestBatchResponse);
+}

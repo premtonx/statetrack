@@ -1,0 +1,41 @@
+[Unit]
+Description=StateTrack Agent (infrastructure change intelligence)
+Documentation=https://github.com/premtonx/statetrack
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+# The agent watches the filesystem and process tree, so it runs as root and
+# keeps exactly the privileges its collectors need. Everything else is
+# dropped by the sandbox directives below.
+ExecStart=/usr/local/bin/statetrack-agent --config /etc/statetrack/agent.yaml
+Restart=always
+RestartSec=5s
+
+# Make /usr, /boot and /etc read-only for the service.
+ProtectSystem=full
+# The agent state (salt, shadow index, spool) lives here.
+StateDirectory=statetrack
+ReadWritePaths=/var/lib/statetrack
+
+# The only capabilities the collectors require:
+#   CAP_SYS_ADMIN      - fanotify (rich file-change notifications)
+#   CAP_AUDIT_READ     - read the audit log to attribute changes to actors
+#   CAP_DAC_READ_SEARCH- read otherwise-unreadable files (e.g. /etc/shadow)
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_AUDIT_READ CAP_DAC_READ_SEARCH
+
+# Network only: gRPC to the central server (plus DNS).
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# Defense in depth.
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+SystemCallArchitectures=native
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

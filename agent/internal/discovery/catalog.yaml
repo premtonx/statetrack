@@ -1,0 +1,637 @@
+# StateTrack Enterprise Application Knowledge Base
+#
+# This file is the version-controlled, air-gap-safe source of truth for the
+# workloads the agent knows how to discover. It is embedded into the compiled
+# agent binary (see catalog.go) so discovery never depends on an external
+# service, a download, or an internet connection: a strictly air-gapped VPC or
+# datacenter gets exactly the same catalog as a connected one.
+#
+# Read the human-facing reference in docs/enterprise-catalog.md before editing.
+# A unit test (catalog_docs_test.go) fails the build when an entry here is
+# missing from that document, so the two cannot silently drift apart.
+#
+# Schema
+# ------
+#   profiles:  named, reusable risk-tiering profiles (see catalog.go RiskProfile)
+#   entries:   one per application / resource family
+#
+# Target kinds understood by the probe engine (probes.go):
+#   file_glob       expand shell-style globs; one workload per match
+#   dir_walk        walk a root (bounded depth) collecting files by extension
+#   registry        Windows registry key (build-tagged; no-op elsewhere)
+#   service         Windows SCM service by name (no-op elsewhere)
+#   scheduled_task  Windows Task Scheduler task store (no-op elsewhere)
+#   k8s_resource    Kubernetes resource kind (requires an API server)
+#
+# Parsers understood by the probe engine:
+#   nginx | apache | iis | systemd | ini | json | yaml | raw
+#
+# `raw` means "treat each matched file as an opaque configuration document":
+# the console still gets a name, a path and a risk tier, but the agent does not
+# attempt to read ports or virtual hosts out of it.
+
+version: 1
+
+# ---------------------------------------------------------------------------
+# Reusable risk profiles (smart tiering heuristics — see catalog.Tier)
+# ---------------------------------------------------------------------------
+#
+# The tiering order is fixed and deliberate:
+#   1. force_level, when set, always wins (a shadow file is critical, period).
+#   2. A staging signal in the workload name or path downgrades to
+#      staging_level *before* any port or production signal is considered —
+#      a staging site bound to :443 is still staging.
+#   3. An HTTPS/secure port bind, a production name, or a production port
+#      promotes to critical_level with a sentence explaining which signal hit.
+#   4. Otherwise the entry's default_level applies.
+profiles:
+  web_server:
+    description: Web servers and reverse proxies; HTTPS binds and production-looking names promote.
+    # Only a TLS-terminating bind promotes a web workload on its own. A bare
+    # :80 vhost is not treated as production: a default/placeholder site listens
+    # on 80 everywhere, so promoting on the port alone would bury the real
+    # findings under every default site in the fleet. A plain-HTTP site that
+    # *matters* still promotes, via its name (or an explicit policy rule).
+    https_ports: [443, 8443]
+    production_ports: []
+    production_patterns: [prod, production, live, www, checkout, payment, billing, api, portal]
+    staging_patterns: [stag, stage, staging, dev, develop, development, test, testing, qa, uat, sandbox, preprod, pre-prod, nonprod, non-prod]
+    critical_level: 1
+    staging_level: 3
+    default_level: 3
+    diff: true
+
+  load_balancer:
+    description: L4/L7 load balancers in front of production traffic.
+    https_ports: [443, 8443]
+    # A load balancer's plain-HTTP frontend *is* the production edge, which is
+    # why this profile promotes on 80 where web_server deliberately does not.
+    production_ports: [80, 6443]
+    production_patterns: [prod, production, live, lb, haproxy, edge, ingress]
+    staging_patterns: [stag, stage, staging, dev, develop, development, test, testing, qa, uat, sandbox, nonprod, non-prod]
+    critical_level: 1
+    staging_level: 3
+    default_level: 1
+    diff: true
+
+  database:
+    description: Stateful database services; any live instance is production data.
+    force_level: 1
+    diff: true
+
+  cache:
+    description: In-memory caches holding production session or queue state.
+    force_level: 1
+    diff: true
+
+  message_broker:
+    description: Brokers whose topology controls production message flow.
+    force_level: 1
+    diff: true
+
+  system_config:
+    description: Core system configuration; a change here can take the host down.
+    force_level: 1
+    diff: true
+
+  security_identity:
+    description: Identity and privilege material (shadow, sudoers, sshd, keys).
+    force_level: 1
+    diff: true
+
+  container_runtime:
+    description: Container runtime configuration and compose manifests.
+    https_ports: []
+    production_ports: []
+    production_patterns: [prod, production, live, edge]
+    staging_patterns: [stag, stage, staging, dev, develop, development, test, testing, qa, sandbox]
+    critical_level: 1
+    staging_level: 3
+    default_level: 1
+    diff: true
+
+  container_volume:
+    description: Container volume contents; fingerprint + hash only (huge, mostly opaque data).
+    force_level: 3
+    diff: false
+
+  kubernetes_workload:
+    description: Kubernetes objects in a production namespace; scrubbed canonical YAML diff.
+    force_level: 1
+    diff: true
+
+  kubernetes_dev:
+    description: Kubernetes objects in a non-production namespace; metadata + hash only.
+    force_level: 3
+    diff: false
+
+# ---------------------------------------------------------------------------
+# Catalog entries
+# ---------------------------------------------------------------------------
+entries:
+  # ------------------------------------------------------------------ Linux
+  - id: nginx
+    name: Nginx
+    vendor: F5
+    category: web_server
+    runtime: linux
+    profile: web_server
+    description: Nginx web server and reverse proxy.
+    targets:
+      - kind: file_glob
+        parser: nginx
+        patterns:
+          - /etc/nginx/nginx.conf
+          - /etc/nginx/conf.d/*.conf
+          - /etc/nginx/sites-enabled/*
+          - /usr/local/nginx/conf/nginx.conf
+          - /usr/local/etc/nginx/nginx.conf
+
+  - id: apache
+    name: Apache HTTP Server
+    vendor: Apache Software Foundation
+    category: web_server
+    runtime: linux
+    profile: web_server
+    description: Apache httpd / apache2 virtual hosts and the main server configuration.
+    targets:
+      - kind: file_glob
+        parser: apache
+        patterns:
+          - /etc/apache2/apache2.conf
+          - /etc/apache2/sites-enabled/*
+          - /etc/apache2/conf.d/*.conf
+          - /etc/httpd/conf/httpd.conf
+          - /etc/httpd/conf.d/*.conf
+          - /etc/httpd/conf/extra/httpd-vhosts.conf
+          - /usr/local/apache2/conf/httpd.conf
+
+  - id: caddy
+    name: Caddy
+    vendor: Stack Overflow / Caddy
+    category: web_server
+    runtime: linux
+    profile: web_server
+    description: Caddy web server; automatic-HTTPS sites are production by definition.
+    targets:
+      - kind: file_glob
+        parser: raw
+        patterns:
+          - /etc/caddy/Caddyfile
+          - /etc/caddy/conf.d/*.caddy
+          - /etc/caddy/*.conf
+
+  - id: haproxy
+    name: HAProxy
+    vendor: HAProxy Technologies
+    category: proxy
+    runtime: linux
+    profile: load_balancer
+    description: HAProxy load balancer frontends, backends and global tuning.
+    targets:
+      - kind: file_glob
+        parser: raw
+        patterns:
+          - /etc/haproxy/haproxy.cfg
+          - /etc/haproxy/conf.d/*.cfg
+          - /usr/local/etc/haproxy/haproxy.cfg
+
+  - id: postgresql
+    name: PostgreSQL
+    vendor: PostgreSQL Global Development Group
+    category: database
+    runtime: linux
+    profile: database
+    description: PostgreSQL clusters (postgresql.conf, pg_hba.conf).
+    targets:
+      - kind: file_glob
+        parser: raw
+        patterns:
+          - /etc/postgresql/*/*/postgresql.conf
+          - /etc/postgresql/*/*/pg_hba.conf
+          - /var/lib/pgsql/data/postgresql.conf
+          - /var/lib/pgsql/data/pg_hba.conf
+          - /var/lib/postgresql/data/postgresql.conf
+          - /var/lib/postgresql/data/pg_hba.conf
+          - /usr/local/pgsql/data/postgresql.conf
+
+  - id: mysql
+    name: MySQL / MariaDB
+    vendor: Oracle / MariaDB Foundation
+    category: database
+    runtime: linux
+    profile: database
+    description: MySQL and MariaDB server configuration.
+    targets:
+      - kind: file_glob
+        parser: ini
+        patterns:
+          - /etc/mysql/my.cnf
+          - /etc/mysql/mysql.conf.d/*.cnf
+          - /etc/mysql/mariadb.conf.d/*.cnf
+          - /etc/my.cnf
+          - /etc/my.cnf.d/*.cnf
+
+  - id: redis
+    name: Redis
+    vendor: Redis Ltd.
+    category: cache
+    runtime: linux
+    profile: cache
+    description: Redis server configuration and persistence policy.
+    targets:
+      - kind: file_glob
+        parser: raw
+        patterns:
+          - /etc/redis/redis.conf
+          - /etc/redis.conf
+          - /etc/redis/*.conf
+          - /usr/local/etc/redis.conf
+
+  - id: rabbitmq
+    name: RabbitMQ
+    vendor: Broadcom / VMware
+    category: message_broker
+    runtime: linux
+    profile: message_broker
+    description: RabbitMQ broker configuration (advanced.config, erlang cookie, definitions).
+    targets:
+      - kind: file_glob
+        parser: raw
+        patterns:
+          - /etc/rabbitmq/rabbitmq.conf
+          - /etc/rabbitmq/advanced.config
+          - /etc/rabbitmq/rabbitmq-env.conf
+          - /etc/rabbitmq/enabled_plugins
+          - /etc/rabbitmq/definitions.json
+          - /var/lib/rabbitmq/.erlang.cookie
+
+  - id: kafka
+    name: Apache Kafka
+    vendor: Apache Software Foundation
+    category: message_broker
+    runtime: linux
+    profile: message_broker
+    description: Kafka broker and ZooKeeper/KRaft controller configuration.
+    targets:
+      - kind: file_glob
+        parser: raw
+        patterns:
+          - /etc/kafka/server.properties
+          - /etc/kafka/conf/server.properties
+          - /etc/kafka/connect/*.properties
+          - /opt/kafka/config/server.properties
+          - /opt/kafka/config/kraft/*.properties
+          - /etc/zookeeper/conf/zoo.cfg
+          - /etc/zookeeper/zoo.cfg
+
+  - id: sshd
+    name: OpenSSH Server
+    vendor: OpenBSD
+    category: security
+    runtime: linux
+    profile: security_identity
+    description: SSH daemon policy; a silent edit here is a classic persistence technique.
+    targets:
+      - kind: file_glob
+        parser: raw
+        patterns:
+          - /etc/ssh/sshd_config
+          - /etc/ssh/sshd_config.d/*.conf
+          - /etc/ssh/ssh_config
+
+  - id: etc_passwd
+    name: Local Accounts (/etc/passwd)
+    vendor: OS
+    category: system
+    runtime: linux
+    profile: security_identity
+    description: Local account database; a new UID is an identity event, not drift.
+    targets:
+      - kind: file_glob
+        parser: raw
+        patterns: [/etc/passwd, /etc/group, /etc/gshadow]
+
+  - id: etc_shadow
+    name: Password Hashes (/etc/shadow)
+    vendor: OS
+    category: security
+    runtime: linux
+    profile: security_identity
+    description: Shadow password file. Readable only as root; hash-changed entries are scrubbed before transmission.
+    targets:
+      - kind: file_glob
+        parser: raw
+        patterns: [/etc/shadow]
+
+  - id: sudoers
+    name: sudo Policy
+    vendor: OS
+    category: security
+    runtime: linux
+    profile: security_identity
+    description: sudo privilege grants, including drop-in policy fragments.
+    targets:
+      - kind: file_glob
+        parser: raw
+        patterns: [/etc/sudoers, /etc/sudoers.d/*]
+
+  - id: systemd_units
+    name: systemd Units
+    vendor: systemd
+    category: system
+    runtime: linux
+    profile: system_config
+    description: Service, timer and socket unit definitions.
+    targets:
+      - kind: dir_walk
+        parser: systemd
+        depth: 1
+        extensions: [.service, .timer, .socket, .mount, .path, .target]
+        patterns:
+          - /etc/systemd/system
+          - /run/systemd/system
+          - /usr/lib/systemd/system
+          - /lib/systemd/system
+      - kind: file_glob
+        parser: raw
+        patterns: [/etc/systemd/journald.conf, /etc/systemd/resolved.conf, /etc/systemd/logind.conf]
+
+  - id: sysctl
+    name: Kernel Tunables (sysctl)
+    vendor: OS
+    category: system
+    runtime: linux
+    profile: system_config
+    description: Kernel and network tunables; a change can silently disable hardening.
+    targets:
+      - kind: file_glob
+        parser: raw
+        patterns: [/etc/sysctl.conf, /etc/sysctl.d/*.conf, /usr/lib/sysctl.d/*.conf]
+
+  - id: docker_daemon
+    name: Docker Engine
+    vendor: Docker Inc.
+    category: container
+    runtime: docker
+    profile: container_runtime
+    description: Docker daemon configuration, including registry and TLS settings.
+    targets:
+      - kind: file_glob
+        parser: json
+        patterns:
+          - /etc/docker/daemon.json
+          - /etc/docker/key.json
+          - /root/.docker/config.json
+          - /etc/containers/registries.conf
+          - /etc/containers/policy.json
+
+  - id: docker_compose
+    name: Docker Compose Manifests
+    vendor: Docker Inc.
+    category: container
+    runtime: docker
+    profile: container_runtime
+    description: Compose project manifests that define production service topology.
+    targets:
+      - kind: file_glob
+        parser: yaml
+        patterns:
+          - /opt/*/docker-compose.yml
+          - /opt/*/docker-compose.yaml
+          - /opt/*/compose.yml
+          - /opt/*/compose.yaml
+          - /srv/*/docker-compose.yml
+          - /srv/*/docker-compose.yaml
+          - /srv/*/compose.yml
+          - /srv/*/compose.yaml
+          - /etc/docker/compose/*.yml
+          - /data/*/docker-compose.yml
+      - kind: file_glob
+        parser: yaml
+        patterns: [/etc/docker/compose/*.yaml, /etc/docker/compose/*.json]
+
+  - id: docker_volumes
+    name: Docker Volume Mounts
+    vendor: Docker Inc.
+    category: container
+    runtime: docker
+    profile: container_volume
+    description: Host-side volume contents. Fingerprint plus SHA-256 only — never diffed.
+    targets:
+      - kind: dir_walk
+        parser: raw
+        depth: 2
+        max_files: 400
+        extensions: [.json, .conf, .cfg, .yaml, .yml, .env]
+        patterns: [/var/lib/docker/volumes]
+
+  # ---------------------------------------------------------------- Windows
+  - id: iis
+    name: Internet Information Services
+    vendor: Microsoft
+    category: web_server
+    runtime: windows
+    profile: web_server
+    description: IIS sites and applications, discovered from applicationHost.config plus every nested web.config.
+    targets:
+      - kind: file_glob
+        parser: iis
+        patterns:
+          - '%WINDIR%\System32\inetsrv\config\applicationHost.config'
+          - '%WINDIR%\System32\inetsrv\config\administration.config'
+      - kind: dir_walk
+        parser: iis
+        depth: 3
+        extensions: [.config]
+        patterns:
+          - '%SystemDrive%\inetpub\wwwroot'
+          - '%SystemDrive%\sites'
+
+  - id: mssql
+    name: Microsoft SQL Server
+    vendor: Microsoft
+    category: database
+    runtime: windows
+    profile: database
+    description: SQL Server instances registered with the Service Control Manager and the registry.
+    targets:
+      - kind: registry
+        parser: raw
+        patterns:
+          - HKLM\Software\Microsoft\Microsoft SQL Server
+          - HKLM\Software\Microsoft\Microsoft SQL Server\Instance Names\SQL
+      - kind: service
+        parser: raw
+        patterns: [MSSQLSERVER, 'MSSQL$*', SQLSERVERAGENT, 'SQLAgent$*']
+
+  - id: rabbitmq_windows
+    name: RabbitMQ (Windows)
+    vendor: Broadcom / VMware
+    category: message_broker
+    runtime: windows
+    profile: message_broker
+    description: RabbitMQ broker configuration on Windows hosts.
+    targets:
+      - kind: file_glob
+        parser: raw
+        patterns:
+          - '%APPDATA%\RabbitMQ\advanced.config'
+          - '%APPDATA%\RabbitMQ\rabbitmq.conf'
+          - '%APPDATA%\RabbitMQ\rabbitmq-env.conf'
+          - '%APPDATA%\RabbitMQ\enabled_plugins'
+          - '%RABBITMQ_BASE%\advanced.config'
+
+  - id: msmq
+    name: Microsoft Message Queuing
+    vendor: Microsoft
+    category: message_broker
+    runtime: windows
+    profile: message_broker
+    description: MSMQ store and configuration; queue topology for legacy enterprise integration.
+    targets:
+      - kind: file_glob
+        parser: raw
+        patterns:
+          - '%WINDIR%\System32\msmq\*.ini'
+          - '%WINDIR%\System32\msmq\Mapping\*.xml'
+      - kind: registry
+        parser: raw
+        patterns: [HKLM\Software\Microsoft\MSMQ]
+
+  - id: hklm_software
+    name: HKLM\Software Configuration
+    vendor: Microsoft
+    category: system
+    runtime: windows
+    profile: system_config
+    description: Machine-wide software configuration; the canonical registry change surface.
+    targets:
+      - kind: registry
+        parser: raw
+        patterns: ['HKLM\Software']
+
+  - id: windows_services
+    name: Windows Service Control Manager
+    vendor: Microsoft
+    category: system
+    runtime: windows
+    profile: system_config
+    description: Service definitions and their image paths, start types and recovery policy.
+    targets:
+      - kind: registry
+        parser: raw
+        patterns: ['HKLM\System\CurrentControlSet\Services']
+
+  - id: windows_scheduled_tasks
+    name: Windows Scheduled Tasks
+    vendor: Microsoft
+    category: system
+    runtime: windows
+    profile: system_config
+    description: Task definitions under the root task store (a common persistence location).
+    targets:
+      - kind: scheduled_task
+        parser: raw
+        patterns: ['%WINDIR%\System32\Tasks']
+
+  - id: windows_sshd
+    name: OpenSSH Server (Windows)
+    vendor: Microsoft / OpenBSD
+    category: security
+    runtime: windows
+    profile: security_identity
+    description: Windows OpenSSH daemon policy and authorised keys.
+    targets:
+      - kind: file_glob
+        parser: raw
+        patterns:
+          - '%PROGRAMDATA%\ssh\sshd_config'
+          - '%PROGRAMDATA%\ssh\administrators_authorized_keys'
+          - '%PROGRAMDATA%\ssh\ssh_host_ed25519_key.pub'
+
+  - id: windows_hosts
+    name: Windows Hosts & Resolver
+    vendor: Microsoft
+    category: system
+    runtime: windows
+    profile: system_config
+    description: Local name resolution and TCP/IP configuration.
+    targets:
+      - kind: file_glob
+        parser: raw
+        patterns:
+          - '%WINDIR%\System32\drivers\etc\hosts'
+          - '%WINDIR%\System32\drivers\etc\services'
+          - '%WINDIR%\System32\drivers\etc\networks'
+
+  # ------------------------------------------------------------- Kubernetes
+  - id: k8s_configmap
+    name: Kubernetes ConfigMap
+    vendor: CNCF
+    category: orchestration
+    runtime: kubernetes
+    profile: kubernetes_workload
+    dev_profile: kubernetes_dev
+    staging_namespaces: [kube-system, kube-public, kube-node-lease, default, dev, test, staging, ci]
+    description: ConfigMap objects across cluster namespaces, serialized to canonical scrubbed YAML.
+    targets:
+      - kind: k8s_resource
+        parser: k8s
+        resource: configmaps
+
+  - id: k8s_secret
+    name: Kubernetes Secret
+    vendor: CNCF
+    category: orchestration
+    runtime: kubernetes
+    profile: kubernetes_workload
+    dev_profile: kubernetes_dev
+    staging_namespaces: [kube-system, kube-public, kube-node-lease, default, dev, test, staging, ci]
+    description: Secret objects. Every data/stringData value is replaced with a deterministic stub at the edge before the document is cached or transmitted.
+    targets:
+      - kind: k8s_resource
+        parser: k8s
+        resource: secrets
+
+  - id: k8s_deployment
+    name: Kubernetes Deployment
+    vendor: CNCF
+    category: orchestration
+    runtime: kubernetes
+    profile: kubernetes_workload
+    dev_profile: kubernetes_dev
+    staging_namespaces: [kube-system, kube-public, kube-node-lease, default, dev, test, staging, ci]
+    description: Deployment specs, including container images, replicas, probes and resource limits.
+    targets:
+      - kind: k8s_resource
+        parser: k8s
+        resource: deployments
+
+  - id: k8s_statefulset
+    name: Kubernetes StatefulSet
+    vendor: CNCF
+    category: orchestration
+    runtime: kubernetes
+    profile: kubernetes_workload
+    dev_profile: kubernetes_dev
+    staging_namespaces: [kube-system, kube-public, kube-node-lease, default, dev, test, staging, ci]
+    description: StatefulSet specs for stateful production workloads (databases, brokers).
+    targets:
+      - kind: k8s_resource
+        parser: k8s
+        resource: statefulsets
+
+  - id: k8s_ingress
+    name: Kubernetes Ingress
+    vendor: CNCF
+    category: orchestration
+    runtime: kubernetes
+    profile: kubernetes_workload
+    dev_profile: kubernetes_dev
+    staging_namespaces: [kube-system, kube-public, kube-node-lease, default, dev, test, staging, ci]
+    description: Ingress routing rules and TLS termination; the cluster's public edge.
+    targets:
+      - kind: k8s_resource
+        parser: k8s
+        resource: ingresses

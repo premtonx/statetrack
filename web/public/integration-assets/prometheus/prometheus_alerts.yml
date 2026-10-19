@@ -1,0 +1,131 @@
+groups:
+  # StateTrack alerting rules.
+  #
+  # Scrape the server's GET /metrics endpoint and evaluate these alongside your
+  # existing node/container rules. Every rule keys off labels that are bounded
+  # by the enrolled fleet, so none of them carries a per-event value.
+  #
+  #   scrape_configs:
+  #     - job_name: statetrack
+  #       metrics_path: /metrics
+  #       static_configs:
+  #         - targets: ["statetrack-server:8080"]
+  #
+  # These rules intentionally never group by `path`, `actor` or `pid`: those
+  # dimensions do not exist as labels (see server/internal/metrics), so a rule
+  # cannot accidentally fan out into thousands of alert instances.
+  - name: statetrack-fleet
+    rules:
+      # --------------------------------------------------------------------- #
+      # 1. Level 1 critical configuration mutation.                           #
+      # --------------------------------------------------------------------- #
+      # An alert per (host, category, action) that saw at least one L1 root
+      # mutation in the window. `host` and the enumerations keep the instance
+      # count proportional to the fleet rather than to the event rate.
+      - alert: StateTrackCriticalConfigMutation
+        expr: |
+          sum by (host, category, action) (
+            increase(statetrack_mutations_total{level="L1"}[5m])
+          ) > 0
+        for: 0m
+        labels:
+          severity: critical
+          team: infrastructure
+        annotations:
+          summary: "Critical configuration mutation on {{ $labels.host }}"
+          description: >-
+            {{ $labels.host }} recorded {{ $value | humanize }} Level 1 (critical)
+            {{ $labels.action }} operation(s) in category {{ $labels.category }}
+            within the last 5 minutes.
+          runbook_url: "{{ $externalURL }}/alerts/StateTrackCriticalConfigMutation"
+
+      # --------------------------------------------------------------------- #
+      # 2. Change storm / circuit-breaker activity.                           #
+      # --------------------------------------------------------------------- #
+      # The agent's storm breaker suppresses floods and reports them as a
+      # single throttled event. Any throttle means an agent was overwhelmed:
+      # either a legitimate bulk deploy or a runaway process, both of which
+      # deserve a look. `for: 2m` filters out one-off bursts.
+      - alert: StateTrackChangeStormDetected
+        expr: |
+          sum by (host) (
+            increase(statetrack_storm_throttles_total[10m])
+          ) > 3
+        for: 2m
+        labels:
+          severity: warning
+          team: infrastructure
+        annotations:
+          summary: "Change storm throttled on {{ $labels.host }}"
+          description: >-
+            {{ $labels.host }} tripped the change-storm circuit breaker
+            {{ $value | humanize }} times in the last 10 minutes. Events beyond
+            the threshold are being suppressed; inspect the
+            CHANGE_STORM_THROTTLED entries on the host timeline.
+          runbook_url: "{{ $externalURL }}/alerts/StateTrackChangeStormDetected"
+
+      # --------------------------------------------------------------------- #
+      # 3. Agent silent / offline.                                            #
+      # --------------------------------------------------------------------- #
+      # Uses the fleet gauge rather than per-host "last seen" scraping: if the
+      # count of online agents drops for any OS, agents have gone dark.
+      - alert: StateTrackAgentOffline
+        expr: |
+          (sum by (os) (statetrack_active_agents{status="online"})
+            < sum by (os) (statetrack_active_agents)) > 0
+        for: 10m
+        labels:
+          severity: warning
+          team: infrastructure
+        annotations:
+          summary: "StateTrack agents offline ({{ $labels.os }})"
+          description: >-
+            {{ $value | humanize }} agent(s) running {{ $labels.os }} have
+            stopped reporting. Changes on those hosts are no longer being
+            captured. Check the agent service and the server's gRPC listener.
+          runbook_url: "{{ $externalURL }}/alerts/StateTrackAgentOffline"
+
+      # --------------------------------------------------------------------- #
+      # 4. Fleet drift growth.                                                #
+      # --------------------------------------------------------------------- #
+      # Drift targets are the paths under management. A sustained climb means
+      # content is appearing outside the tracked baseline (deploys bypassing
+      # the pipeline, ad-hoc edits, or a config management failure).
+      - alert: StateTrackFleetDriftDetected
+        expr: |
+          sum(increase(statetrack_mutations_total{level="L3"}[1h])) > 25
+          and
+          sum(statetrack_drift_targets) > 0
+        for: 5m
+        labels:
+          severity: warning
+          team: infrastructure
+        annotations:
+          summary: "Configuration drift increasing across the fleet"
+          description: >-
+            {{ $value | humanize }} Level 3 (drift) mutations observed in the
+            last hour across the fleet. Baseline drift is expected during
+            deploys; a sustained rate usually means unmanaged change. Break the
+            total down per host on the StateTrack overview dashboard.
+          runbook_url: "{{ $externalURL }}/alerts/StateTrackFleetDriftDetected"
+
+      # --------------------------------------------------------------------- #
+      # Bonus: ingester health. Not one of the four required rules, but the    #
+      # SLI metric is useless if nothing watches it.                           #
+      # --------------------------------------------------------------------- #
+      - alert: StateTrackIngestLatencyHigh
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(statetrack_ingest_batch_duration_seconds_bucket[5m]))
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "StateTrack ingest p95 latency above 1s"
+          description: >-
+            The 95th percentile time to durably store an agent batch has been
+            above one second for 5 minutes. Check PostgreSQL write latency and
+            partition maintenance on the events table.

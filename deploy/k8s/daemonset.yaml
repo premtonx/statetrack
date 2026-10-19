@@ -1,0 +1,152 @@
+# StateTrack agent on Kubernetes: a DaemonSet, so every node reports the host
+# configuration it controls (kubelet config, CNI, container runtime, mounted
+# secrets) through the same pipeline as a plain Linux VM.
+#
+# The DaemonSet and the Deployment in deployment.yaml are two halves of one
+# picture and are meant to run together:
+#   * DaemonSet  -> per-node, hostPath reads, OS-level timeline.
+#   * Deployment -> one pod, in-cluster API client, cluster-level timeline.
+# They share the ServiceAccount and RBAC in rbac.yaml.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: statetrack
+  labels:
+    app.kubernetes.io/name: statetrack-agent
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: statetrack-agent
+  namespace: statetrack
+  labels:
+    app.kubernetes.io/name: statetrack-agent
+data:
+  # The node DaemonSet's config. Node identity comes from the Downward API
+  # (spec.nodeName) rather than the hostname, so a recreated pod keeps the same
+  # node identity and does not look like a brand-new host to the server.
+  node-agent.yaml: |
+    log_level: info
+    state_dir: /var/lib/statetrack
+    server:
+      address: statetrack-server.statetrack.svc:50051
+    watch:
+      paths:
+        - /host/etc
+        - /host/var/lib/kubelet
+        - /host/etc/cni/net.d
+        - /host/etc/kubernetes
+        - /host/var/lib/containerd
+        - /host/var/lib/docker
+      exclude:
+        - /host/var/lib/containerd/io.containerd.content.v1.content/**
+        - /host/var/lib/docker/overlay2/**
+    baseline:
+      pace: 1ms
+    # Kubernetes is watched by the cluster Deployment, not by every node pod:
+    # one watcher per cluster is what keeps an object's change reported once.
+    kubernetes:
+      enabled: false
+
+  # The cluster watcher's config. Namespaces are listed explicitly so the
+  # watcher works with either the ClusterRole or the namespace-scoped Role in
+  # rbac.yaml; remove the list to watch every namespace the account can list.
+  cluster-agent.yaml: |
+    log_level: info
+    state_dir: /var/lib/statetrack
+    server:
+      address: statetrack-server.statetrack.svc:50051
+    watch:
+      paths: []
+    kubernetes:
+      enabled: true
+      cluster: prod-k8s-01
+      namespaces:
+        - default
+        - production
+        - payments
+      resync_interval: 10m
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: statetrack-agent
+  namespace: statetrack
+  labels:
+    app.kubernetes.io/name: statetrack-agent
+    app.kubernetes.io/component: node-agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: statetrack-agent
+      app.kubernetes.io/component: node-agent
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 10%
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: statetrack-agent
+        app.kubernetes.io/component: node-agent
+    spec:
+      serviceAccountName: statetrack-agent
+      hostPID: true
+      # The agent reads host paths, so a read-only mount is the only mount.
+      # It never writes to the host: state lives in the pod's own volume.
+      containers:
+        - name: agent
+          image: ghcr.io/premtonx/statetrack-agent:latest
+          args: ["--config", "/etc/statetrack/agent.yaml"]
+          env:
+            # Node identity, so two pods on a re-scheduled node are one host.
+            - name: STATETRACK_HOST_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: STATETRACK_LOG_LEVEL
+              value: info
+          volumeMounts:
+            - name: config
+              mountPath: /etc/statetrack
+              readOnly: true
+            - name: state
+              mountPath: /var/lib/statetrack
+            # Host filesystem, read-only, under /host so the agent's paths
+            # are unambiguous and a stray write is impossible.
+            - name: host-root
+              mountPath: /host
+              readOnly: true
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: config
+          configMap:
+            name: statetrack-agent
+            items:
+              - key: node-agent.yaml
+                path: agent.yaml
+        - name: state
+          hostPath:
+            path: /var/lib/statetrack-agent
+            type: DirectoryOrCreate
+        - name: host-root
+          hostPath:
+            path: /
+            type: Directory
+      tolerations:
+        # A node with a problem is exactly the node whose configuration is
+        # worth reporting, so the agent tolerates every taint and runs on the
+        # control plane too.
+        - operator: Exists
